@@ -1,0 +1,79 @@
+import { createApp } from 'vue/dist/vue.esm-bundler.js';
+import './style.css';
+
+createApp({
+  data: () => ({ username: '', password: '', authMode: 'login', claimLegacy: false, tick: 0, state: null, page: 'home', kind: 'frog', name: '', place: 'forest', busy: false, error: '', selected: null, now: Date.now()/1000, offset: 0, timer: null, polling: false, refreshTask: null,
+    animals: {frog:'🐸',cat:'🐱',fox:'🦊',rabbit:'🐰',squirrel:'🐿️'}, labels:{frog:'青蛙',cat:'小猫',fox:'狐狸',rabbit:'兔子',squirrel:'松鼠'},
+    places: {forest:{name:'微风森林',icon:'🌳',tag:'走进一片绿意',description:'树荫、苔藓，还有藏在风里的小惊喜。'},sea:{name:'日落海岸',icon:'🐚',tag:'听一听海的声音',description:'沿着柔软沙滩，捡起一枚被海浪磨亮的贝壳。'},mountain:{name:'星星山谷',icon:'⛰️',tag:'离天空再近一点',description:'穿过安静山谷，等一颗星星亮起来。'}} }),
+  computed: {
+    animal(){ return this.state?.animal; },
+    trip(){return this.state?.travel;},
+    cards(){return this.state?.postcards || [];},
+    unread(){return this.cards.filter(c=>!c.opened);},
+    remaining(){return Math.max(0, Math.ceil((this.trip?.ends_at || 0)-this.now));},
+    progress(){return this.trip ? Math.min(100,Math.max(0,(this.now-this.trip.started_at)/(this.trip.ends_at-this.trip.started_at)*100)):0;}
+  },
+  methods: {
+    async api(path, body){
+      const response = await fetch('/api'+path, body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(response.status===401 && path!=='/login'){this.selected=null;this.state=null; await this.refresh();}
+      if(!response.ok){const e=await response.json().catch(()=>({}));throw new Error(typeof e.detail==='string'?e.detail:'操作没有完成，请稍后重试。');}
+      return response.json();
+    },
+    async refresh(){
+      if(this.refreshTask)return this.refreshTask;
+      this.polling=true;
+      this.refreshTask=(async()=>{
+        try{this.state=await this.api('/state');this.offset=this.state.server_time-Date.now()/1000;this.now=this.state.server_time;this.error='';}
+        catch(e){this.error='暂时连接不上小屋，请检查服务是否启动，再点击重试。';}
+      })();
+      try{await this.refreshTask;}finally{this.polling=false;this.refreshTask=null;}
+    },
+    async act(path,body,after){
+      if(this.busy)return;
+      this.busy=true;this.error='';
+      try{if(this.refreshTask)await this.refreshTask;await this.api(path,body);await this.refresh();after?.();}
+      catch(e){this.error=e.message;}finally{this.busy=false;}
+    },
+    authenticate(){this.act('/'+(this.authMode==='login'?'login':'register'),{username:this.username,password:this.password,claim_legacy:this.claimLegacy},()=>{this.password='';this.page='home';});},
+    logout(){this.act('/logout',{},()=>{this.selected=null;this.password='';this.page='home';});},
+    clock(t){return new Date(t*1000).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});},
+    adopt(){this.act('/animal',{kind:this.kind,name:this.name});},
+    depart(){this.act('/travel',{place:this.place},()=>this.page='home');},
+    open(card){this.selected=card;if(!card.opened)this.act('/postcards/'+card.id+'/open',{});},
+    date(t){return new Date(t*1000).toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric'});},
+    escape(e){if(e.key==='Escape')this.selected=null;}
+  },
+  async mounted(){await this.refresh();this.timer=setInterval(()=>{this.now=Date.now()/1000+this.offset;this.tick++;if(!this.busy&&((this.trip&&this.remaining===0)||(this.state?.user&&this.tick%10===0)))this.refresh();},1000);document.addEventListener('keydown',this.escape);},
+  beforeUnmount(){clearInterval(this.timer);document.removeEventListener('keydown',this.escape);},
+  template: `
+    <div class="shell">
+      <header><a class="brand" href="#" @click.prevent="page='home'"><span class="brand-mark">✳</span><span>小小远行<small>JustASmallJourney</small></span></a><span class="header-note">把日子过慢一点，把世界看多一点。</span><span class="account" v-if="state?.user">{{state.user.username}} <button class="text-button" @click="logout" :disabled="busy">退出</button></span><span class="edition" v-else>朋友共享版 · 02</span></header>
+      <div v-if="error" class="error" role="alert">{{error}} <button @click="refresh" :disabled="polling">重试</button></div>
+      <main v-if="!state" class="loading">正在打开你的小屋…</main>
+      <main v-else-if="!state.user" class="welcome auth-screen">
+        <span class="eyebrow">OUR LITTLE SHARED WORLD</span><h1>世界很大，<br>在这里遇见朋友。</h1><p>每个人一间小屋，每一次远行都有新的故事。<br>登录后，回到属于你的小世界。</p>
+        <div class="auth-tabs"><button :class="{active:authMode==='login'}" @click="authMode='login';error=''">回到小屋</button><button :class="{active:authMode==='register'}" @click="authMode='register';error=''">初次入住</button></div>
+        <form @submit.prevent="authenticate"><label for="username">用户名</label><input id="username" v-model="username" required maxlength="24" autocomplete="username" placeholder="朋友们怎么称呼你"><label for="password">密码</label><input id="password" type="password" v-model="password" required minlength="8" maxlength="128" :autocomplete="authMode==='login'?'current-password':'new-password'" placeholder="至少 8 位字符">
+        <label v-if="authMode==='register'&&state.legacy_available" class="legacy-choice"><input type="checkbox" v-model="claimLegacy" required>将原来的小动物与旅行回忆保存到我的账号</label><button class="primary" :disabled="busy||!username.trim()||password.length<8">{{busy?'正在打开小屋…':authMode==='login'?'登录小屋 ↗':'创建我的账号 ↗'}}</button></form><p class="hint">这个小世界，最多容纳 15 位朋友。</p>
+      </main>
+      <main v-else-if="!animal" class="welcome">
+        <span class="eyebrow">一段小小的故事，从这里开始</span><h1>谁会陪你，<br>走过这些好天气？</h1><p>选一只小动物，为它起个名字。<br>以后，它会把远方的风景带回给你。</p>
+        <form @submit.prevent="adopt"><div class="animal-options"><button v-for="(emoji,key) in animals" :key="key" type="button" :class="{chosen:kind===key}" @click="kind=key" :aria-pressed="kind===key"><span>{{emoji}}</span>{{labels[key]}}</button></div><label for="animal-name">它的名字</label><input id="animal-name" v-model="name" maxlength="16" required placeholder="例如：小满" autocomplete="off"><button class="primary" :disabled="busy||!name.trim()">{{busy?'正在布置小屋…':'一起住进小屋 ↗'}}</button></form>
+      </main>
+      <template v-else>
+        <nav aria-label="主要页面"><button :class="{active:page==='home'}" @click="page='home'">⌂ 我的小屋</button><button :class="{active:page==='prepare'}" @click="page='prepare'">♧ 去远行</button><button :class="{active:page==='collection'}" @click="page='collection'">▤ 明信片 <span>{{cards.length}}</span></button><button :class="{active:page==='world'}" @click="page='world'">♧ 朋友世界</button></nav>
+        <main v-if="page==='home'">
+          <div class="page-heading"><div><span class="eyebrow">HOME, SWEET HOME</span><h1>{{trip?'它去看看世界了。':'平凡的一天，也有小小期待。'}}</h1><p>{{trip?'你可以先去忙，远方的故事会等你回来。':'收好行囊，让下一段故事慢慢发生。'}}</p></div><span class="status"><i :class="{away:trip}"></i>{{animal.name}} · {{trip?'旅行中':'在家'}}</span></div>
+          <div class="home-grid"><section class="scene home-scene" aria-label="绿树环绕的小屋"><span class="scene-caption">{{animal.name}}的小屋 / 一切都刚刚好</span><div class="sun"></div><div class="cloud c1"></div><div class="cloud c2"></div><div class="hill h1"></div><div class="hill h2"></div><span class="tree t1">🌳</span><span class="tree t2">🌳</span><div class="cottage"><div class="roof"></div><div class="wall"><div class="window">✚</div><div class="door"></div></div></div><div class="path"></div><span class="flower f1">✿</span><span class="flower f2">✿</span><span class="resident" v-if="!trip">{{animals[animal.kind]}}</span><span class="travel-sign" v-else>出门散步，晚点回来 ↗</span><span class="scene-bottom">风很轻，时间很慢。</span></section>
+          <aside class="home-side"><section class="panel journey-panel"><span class="eyebrow">{{trip?'ON THE ROAD':'NEXT LITTLE ADVENTURE'}}</span><h2>{{trip?places[trip.place].name:'今天，去哪里走走？'}}</h2><p>{{trip?'饭团已经带好，小小的冒险正在发生。':'一份饭团，一点好奇心，就可以出发了。'}}</p><template v-if="trip"><div class="travel-emoji">{{animals[animal.kind]}} <span>······</span> {{places[trip.place].icon}}</div><div class="progress"><div :style="{width:progress+'%'}"></div></div><div class="countdown">{{remaining>0?'预计 '+remaining+' 秒后回家':'正在整理旅行回忆…'}}</div><p class="hint">关掉网页也没关系，旅程会继续。</p></template><template v-else><div class="packed">🍙 <span>饭团已备好<small>每次旅行，免费补充</small></span></div><button class="primary" @click="page='prepare'">准备一场远行 ↗</button></template></section><section class="mail-panel"><span class="mail-icon">✉</span><div><h3>{{unread.length?'有 '+unread.length+' 张新明信片':'远方来信'}}</h3><p>{{unread.length?'一份小小的惊喜，等你拆开。':'旅行带回的故事，会好好存在这里。'}}</p><button class="text-button" @click="unread.length?open(unread[0]):page='collection'">{{unread.length?'拆开看看 →':'看看收藏 →'}}</button></div></section></aside></div>
+          <section class="recent"><div class="section-heading"><h2>留住一些好时光 <span>RECENT MEMORIES</span></h2><button class="text-button" @click="page='collection'">全部明信片 ↗</button></div><div v-if="!cards.length" class="empty-memory">✧ 第一张明信片，会是什么风景呢？ <span>等它旅行回来，这里就有故事了。</span></div><div v-else class="card-grid"><button v-for="card in cards.slice(0,3)" class="postcard" @click="open(card)"><div class="mini-scene" :class="card.place"><span>{{places[card.place].icon}}</span><b v-if="card.participants.length" class="companions"><span v-for="(p,i) in card.participants" :key="i">{{animals[p.kind]}}</span></b><b v-else>{{animals[card.animal]}}</b><i v-if="!card.opened">NEW</i></div><div class="card-meta"><strong>{{card.encounter_id?'同行 · ':''}}{{places[card.place].name}}</strong><span>{{date(card.created_at)}}</span></div></button></div></section>
+        </main>
+        <main v-else-if="page==='prepare'"><div class="page-heading"><div><span class="eyebrow">A PLACE TO WANDER</span><h1>挑一个心动的远方。</h1><p>不必走得很远，也能带回新的故事。</p></div><span class="edition">每次约 {{state.duration}} 秒</span></div><div class="destinations"><button v-for="(p,key) in places" :class="['destination',key,{chosen:place===key}]" @click="place=key" :aria-pressed="place===key"><div class="destination-art">{{p.icon}}</div><div class="destination-copy"><small>{{p.tag}}</small><h2>{{p.name}} <span v-if="place===key">✓</span></h2><p>{{p.description}}</p></div></button></div><section class="packing panel"><div><span class="eyebrow">YOUR LITTLE BACKPACK</span><h2>行囊轻轻，期待满满。</h2><p>🍙 饭团 × 1 · 免费提供，本次自动装入背包。</p></div><button class="primary" :disabled="busy||!!trip" @click="depart">{{trip?'小动物还在旅行中':busy?'正在出发…':'出发去'+places[place].name+' ↗'}}</button></section></main>
+        <main v-else-if="page==='world'"><div class="page-heading"><div><span class="eyebrow">SOMEWHERE, TOGETHER</span><h1>原来，你也在这里。</h1><p>同一地点，重叠的旅程，就能留下共同回忆。世界每 10 秒更新一次。</p></div></div><div class="world-grid"><section class="panel"><h2>朋友的小动物</h2><p v-if="!state.friends.length">还没有其他小动物入住。朋友注册并领养动物后，就会出现在这里。</p><div class="friend" v-for="friend in state.friends" :key="friend.username"><span class="friend-emoji">{{animals[friend.kind]}}</span><div><strong>{{friend.name}}</strong><small>{{friend.username}}的小动物</small></div><span class="friend-status">{{friend.place?'正在'+places[friend.place].name:'在小屋休息'}}</span></div></section><section class="panel"><h2>这个世界的足迹</h2><p v-if="!state.events.length">第一段故事，等着大家写下。</p><article class="world-event" v-for="event in state.events" :key="event.id"><time>{{clock(event.created_at)}}</time><p>{{event.message}}</p></article></section></div></main>
+        <main v-else><div class="page-heading"><div><span class="eyebrow">POSTCARDS & MEMORIES</span><h1>把远方，收进日常。</h1><p>共 {{cards.length}} 张明信片，每一张都是走过的时光。</p></div></div><div v-if="cards.length" class="card-grid"><button v-for="card in cards" class="postcard" @click="open(card)"><div class="mini-scene" :class="card.place"><span>{{places[card.place].icon}}</span><b v-if="card.participants.length" class="companions"><span v-for="(p,i) in card.participants" :key="i">{{animals[p.kind]}}</span></b><b v-else>{{animals[card.animal]}}</b><i v-if="!card.opened">NEW</i></div><div class="card-meta"><strong>{{card.encounter_id?'同行 · ':''}}{{places[card.place].name}}</strong><span>{{date(card.created_at)}}</span></div><p class="card-quote">“{{card.message}}”</p></button></div><section v-else class="collection-empty"><span>✉</span><h2>信箱里，装着对远方的期待。</h2><p>完成第一次旅行，就能收到属于你的明信片。</p><button class="primary" @click="page='prepare'">去看看世界 ↗</button></section></main>
+      </template>
+      <footer><span>✳ 小小远行</span><span>不赶路，只收集沿途的小幸福。</span><span>一个慢慢长大的小世界</span></footer>
+      <div v-if="selected" class="modal-backdrop" @click.self="selected=null"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="postcard-title"><button class="close" @click="selected=null" aria-label="关闭明信片" autofocus>×</button><div class="mini-scene large" :class="selected.place"><span>{{places[selected.place].icon}}</span><b v-if="selected.participants.length" class="companions"><span v-for="(p,i) in selected.participants" :key="i">{{animals[p.kind]}}</span></b><b v-else>{{animals[selected.animal]}}</b><div class="stamp">小小远行<br>POSTCARD</div></div><div class="letter"><span class="eyebrow">A LITTLE NOTE FOR YOU</span><div v-if="selected.encounter_id" class="encounter-label">两只小动物，一段共同回忆</div><h2 id="postcard-title">来自{{places[selected.place].name}}的问候</h2><p>“{{selected.message}}”</p><div class="souvenir">顺手带回：{{selected.gift}}</div><div class="signature">{{selected.name}} · {{date(selected.created_at)}}</div><small>已自动保存到你的明信片收藏</small></div></section></div>
+    </div>`
+}).mount('#app');
