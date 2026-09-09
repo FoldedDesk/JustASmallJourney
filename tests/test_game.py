@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 from pathlib import Path
+from datetime import datetime
 import unittest
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
@@ -153,6 +154,49 @@ class GameTests(unittest.TestCase):
         self.assertIn('松果', friend_state['events'][0]['message'])
         self.assertEqual(self.client.post('/api/gifts', json={'to_username': 'friend', 'item': 'pinecone'}).status_code, 409)
         self.assertEqual(self.item(friend.get('/api/state').json(), 'souvenirs', 'pinecone')['quantity'], 1)
+
+    def test_shared_weather_seasons_and_local_midnight(self):
+        stamp = lambda date: datetime.fromisoformat(date).replace(tzinfo=self.game.TIMEZONE).timestamp()
+        for date, season in [('2026-03-01', 'spring'), ('2026-06-01', 'summer'), ('2026-09-01', 'autumn'), ('2026-12-01', 'winter'), ('2027-01-01', 'winter')]:
+            weather = self.game.world_weather(stamp(date))
+            self.assertEqual(weather['season']['key'], season)
+            self.assertEqual(weather, self.game.world_weather(stamp(date) + 86399))
+        before = self.game.world_weather(stamp('2026-09-09') - 1)
+        after = self.game.world_weather(stamp('2026-09-09'))
+        self.assertEqual(before['date'], '2026-09-08')
+        self.assertEqual(after['date'], '2026-09-09')
+        friend = self.second_player()
+        with patch.object(self.game.time, 'time', return_value=stamp('2026-09-09')):
+            self.assertEqual(self.client.get('/api/state').json()['weather'], friend.get('/api/state').json()['weather'])
+
+    def test_departure_weather_survives_restart_and_next_day_settlement(self):
+        self.adopt()
+        weather = self.game.world_weather(self.game.time.time())
+        weather.update(key='rainy', **self.game.WEATHER['rainy'])
+        with patch.object(self.game, 'world_weather', return_value=weather):
+            self.assertEqual(self.client.post('/api/travel', json={'place': 'library', 'food': 'hot_tea'}).status_code, 201)
+        self.assertEqual(self.client.get('/api/state').json()['travel']['weather'], weather)
+        self.finish()
+        importlib.reload(self.game)
+        tomorrow = self.game.world_weather(self.game.time.time() + 86400)
+        with patch.object(self.game, 'world_weather', return_value=tomorrow):
+            state = self.client.get('/api/state').json()
+        card = state['postcards'][0]
+        self.assertEqual(state['weather'], tomorrow)
+        self.assertEqual(card['weather'], weather)
+        self.assertIn('书页和雨声', card['message'])
+        self.assertIn('热茶', card['message'])
+        self.assertEqual(self.client.get('/api/state').json()['postcards'][0], card)
+
+    def test_old_trip_without_weather_still_settles(self):
+        self.adopt()
+        self.client.post('/api/travel', json={'place': 'forest'})
+        with self.game.database() as con:
+            con.execute("UPDATE trips SET weather='{}'")
+        self.finish()
+        card = self.client.get('/api/state').json()['postcards'][0]
+        self.assertIsNone(card['weather'])
+        self.assertIn(card['message'], self.game.PLACES['forest']['lines'])
 
     def test_gift_validation(self):
         self.adopt()

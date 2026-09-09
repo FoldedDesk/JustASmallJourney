@@ -17,14 +17,40 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from content import EXTRA_FOODS, EXTRA_PLACES, EXTRA_SOUVENIRS, PLACE_PRESENTATION, COMBINATIONS, match_combination
 
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('JOURNEY_DB', ROOT / 'data/journey.sqlite3'))
 DB.parent.mkdir(parents=True, exist_ok=True)
 DURATION = max(1, int(os.environ.get('JOURNEY_DURATION_SECONDS', '60')))
+GROW_SECONDS = max(1, int(os.environ.get('JOURNEY_GROW_SECONDS', '300')))
+HARVEST_AMOUNT = 6
 SESSION_SECONDS = 30 * 86400
 TIMEZONE = ZoneInfo(os.environ.get('JOURNEY_TIMEZONE', 'Asia/Shanghai'))
 ANIMALS = ['frog', 'cat', 'fox', 'rabbit', 'squirrel']
+WEATHER = {
+    'sunny': {'name': '晴朗', 'icon': '☀️', 'note': '适合慢慢散步，把阳光带回家。', 'memory': '阳光把一路的影子拉得很长。'},
+    'cloudy': {'name': '多云', 'icon': '☁️', 'note': '云走得很慢，今天也不用着急。', 'memory': '看着云变成小动物的形状，忍不住多停了一会儿。'},
+    'rainy': {'name': '小雨', 'icon': '🌧️', 'note': '听听雨声，也是一场小旅行。', 'memory': '在屋檐下听了一阵雨，等雨小了才继续走。'},
+    'windy': {'name': '微风', 'icon': '🍃', 'note': '风会捎来远方的小消息。', 'memory': '风翻动了行囊边的小纸条，像在催我给你写信。'},
+}
+SEASONS = {
+    'spring': {'name': '春天', 'note': '路边的新芽，正在悄悄长大。'},
+    'summer': {'name': '夏天', 'note': '树荫和晚风，都值得多停留一会儿。'},
+    'autumn': {'name': '秋天', 'note': '捡起一片落叶，把秋天夹进回忆。'},
+    'winter': {'name': '冬天', 'note': '远行之后，记得回温暖的小屋。'},
+}
+
+
+def world_weather(now):
+    """Fictional shared weather; stable for a local calendar day across restarts."""
+    day = datetime.fromtimestamp(now, TIMEZONE)
+    date = day.date().isoformat()
+    key = list(WEATHER)[int(hashlib.sha256(date.encode()).hexdigest()[:8], 16) % len(WEATHER)]
+    season = ('winter', 'spring', 'summer', 'autumn')[(day.month % 12) // 3]
+    return {'date': date, 'key': key, **WEATHER[key], 'season': {'key': season, **SEASONS[season]}}
+
+
 PLACES = {
     'forest': {
         'name': '微风森林',
@@ -104,6 +130,13 @@ SOUVENIRS = {
     'dew_bead': {'name': '露珠珠子', 'icon': '🫧', 'description': '像把雨后的早晨收进掌心。'},
     'travel_badge': {'name': '同行纪念章', 'icon': '🏵️', 'description': '和朋友的小动物相遇时留下的共同回忆。'},
 }
+PLACES.update(EXTRA_PLACES)
+for key, (icon, tag, description) in PLACE_PRESENTATION.items():
+    PLACES[key].update(icon=icon, tag=tag, description=description)
+FOODS.update(EXTRA_FOODS)
+for key, food in FOODS.items():
+    food.setdefault('price', 2 if key == 'rice_ball' else 3)
+SOUVENIRS.update(EXTRA_SOUVENIRS)
 ITEM_CATALOG = {
     **{key: {**value, 'category': 'food'} for key, value in FOODS.items()},
     **{key: {**value, 'category': 'tool'} for key, value in TOOLS.items()},
@@ -171,11 +204,19 @@ with database() as con:
     CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, message TEXT NOT NULL, created_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS auth_attempts(address TEXT PRIMARY KEY, count INTEGER NOT NULL, started_at REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS gardens(user_id INTEGER PRIMARY KEY REFERENCES users(id), clovers INTEGER NOT NULL DEFAULT 12 CHECK(clovers>=0));
+    CREATE TABLE IF NOT EXISTS garden_plots(user_id INTEGER NOT NULL REFERENCES users(id), plot INTEGER NOT NULL CHECK(plot BETWEEN 1 AND 3), ready_at REAL, cycle INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id,plot));
+    CREATE TABLE IF NOT EXISTS shop_orders(user_id INTEGER NOT NULL REFERENCES users(id), request_id TEXT NOT NULL, item_key TEXT NOT NULL, price INTEGER NOT NULL, created_at REAL NOT NULL, PRIMARY KEY(user_id,request_id));
     """)
     ensure_column(con, 'trips', 'food_key', 'TEXT')
     ensure_column(con, 'trips', 'tool_key', 'TEXT')
+    ensure_column(con, 'trips', 'weather', "TEXT NOT NULL DEFAULT '{}'")
+    ensure_column(con, 'trips', 'combination', "TEXT NOT NULL DEFAULT '{}'")
     ensure_column(con, 'cards', 'rewards', "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(con, 'cards', 'variant', "TEXT NOT NULL DEFAULT 'standard'")
+    ensure_column(con, 'cards', 'title', "TEXT NOT NULL DEFAULT ''")
+    ensure_column(con, 'cards', 'template_key', "TEXT NOT NULL DEFAULT ''")
+    ensure_column(con, 'cards', 'combination', "TEXT NOT NULL DEFAULT '{}'")
 
 app = FastAPI(title='JustASmallJourney')
 
@@ -207,6 +248,10 @@ class TravelInput(BaseModel):
 class GiftInput(BaseModel):
     to_username: str = Field(min_length=1, max_length=24)
     item: str
+
+class ShopInput(BaseModel):
+    item: str
+    request_id: str = Field(min_length=16, max_length=80, pattern=r'^[a-zA-Z0-9-]+$')
 
 def password_hash(password, salt=None):
     salt = salt or secrets.token_hex(16)
@@ -288,6 +333,18 @@ def ensure_starter_items(con, user_id, pet_id, now=None):
     now = now or time.time()
     for key, quantity in STARTER_ITEMS.items():
         grant_item(con, user_id, key, quantity, 'starter', pet_id, now)
+    con.execute('INSERT OR IGNORE INTO gardens(user_id) VALUES(?)', (user_id,))
+    for plot in range(1, 4):
+        con.execute('INSERT OR IGNORE INTO garden_plots(user_id,plot) VALUES(?,?)', (user_id, plot))
+
+def garden_state(con, user_id, now):
+    garden = con.execute('SELECT clovers FROM gardens WHERE user_id=?', (user_id,)).fetchone()
+    if not garden:
+        return None
+    plots = [dict(row) for row in con.execute('SELECT plot,ready_at,cycle FROM garden_plots WHERE user_id=? ORDER BY plot', (user_id,))]
+    for plot in plots:
+        plot['status'] = 'empty' if plot['ready_at'] is None else 'ready' if plot['ready_at'] <= now else 'growing'
+    return {'clovers': garden['clovers'], 'plots': plots, 'grow_seconds': GROW_SECONDS, 'harvest_amount': HARVEST_AMOUNT}
 
 def rewards_from_gift(gift):
     gift = (gift or '').strip()
@@ -323,7 +380,7 @@ def inventory_state(con, user_id, now):
         },
     }
 
-def create_card(con, user_id, trip_id, encounter_id, place_key, animal, name, message, gift, created_at, participants='[]', rewards=None, variant='standard'):
+def create_card(con, user_id, trip_id, encounter_id, place_key, animal, name, message, gift, created_at, participants='[]', rewards=None, variant='standard', combination=None):
     rewards = rewards or []
     if encounter_id is None:
         inserted = con.execute(
@@ -338,6 +395,9 @@ def create_card(con, user_id, trip_id, encounter_id, place_key, animal, name, me
         ).rowcount
         card = con.execute('SELECT id FROM cards WHERE user_id=? AND encounter_id=?', (user_id, encounter_id)).fetchone()
     if inserted and card:
+        title = combination['title'] if combination else ('同行 · ' if encounter_id else '特别风景 · ' if variant == 'special' else '远方来信 · ') + PLACES[place_key]['name']
+        template_key = 'combo:' + combination['key'] if combination else place_key + ':' + variant
+        con.execute('UPDATE cards SET title=?,template_key=?,combination=? WHERE id=?', (title, template_key, json.dumps(combination or {}, ensure_ascii=False), card['id']))
         for key in rewards:
             grant_item(con, user_id, key, 1, 'card', card['id'], created_at)
 
@@ -418,9 +478,23 @@ def settle(con, now):
         if tool and tool.get('effect') == 'extra' and random.random() < 0.5:
             rewards.append(place['extra_gift_key'])
         lines = place['special_lines'] if variant == 'special' else place['lines']
+        message = random.choice(lines)
+        combination = json.loads(trip['combination']) or None
+        if combination:
+            rewards.append(combination['reward'])
+            message = combination['message']
+            variant = 'combination'
+        weather = json.loads(trip['weather'])
+        if weather:
+            memory = weather['memory']
+            if trip['place'] == 'library':
+                memory = '窗外下着小雨，书页和雨声刚好作伴。' if weather['key'] == 'rainy' else '隔着窗看了一会儿天色，又轻轻翻过一页书。'
+            message += memory
+            if trip['food_key'] == 'hot_tea' and weather['key'] in ('rainy', 'windy'):
+                message += '带来的热茶，刚好暖了暖手心。'
         create_card(
             con, trip['user_id'], trip['id'], None, trip['place'], trip['kind'], trip['name'],
-            random.choice(lines), describe_rewards(trip['place'], rewards), trip['ends_at'], rewards=rewards, variant=variant,
+            message, describe_rewards(trip['place'], rewards), trip['ends_at'], rewards=rewards, variant=variant, combination=combination,
         )
         for encounter in con.execute('SELECT * FROM encounters WHERE trip_a=? OR trip_b=?',(trip['id'],trip['id'])).fetchall():
             create_card(
@@ -431,12 +505,16 @@ def settle(con, now):
 
 def as_card(row):
     result=dict(row)
+    result['weather']=json.loads(result.get('weather', '{}')) or None
+    result['combination']=json.loads(result['combination']) or None
     result['participants']=json.loads(result['participants'])
     result['rewards']=[item_snapshot(key) for key in decode_rewards(result['rewards'])]
     return result
 
 def as_trip(row):
     result = dict(row)
+    result['weather'] = json.loads(result['weather']) or None
+    result['combination'] = json.loads(result['combination']) or None
     result['food'] = item_snapshot(result['food_key']) if result.get('food_key') else None
     result['tool'] = item_snapshot(result['tool_key']) if result.get('tool_key') else None
     return result
@@ -453,16 +531,17 @@ def state(request: Request):
     with database() as con:
         con.execute('BEGIN IMMEDIATE')
         user=identity(con,request,False)
-        base={'user':dict(user) if user else None,'server_time':now,'duration':DURATION,'legacy_available':legacy_available(con)}
+        base={'user':dict(user) if user else None,'server_time':now,'duration':DURATION,'legacy_available':legacy_available(con),'weather':world_weather(now), 'catalog': {'places': PLACES, 'combinations': COMBINATIONS}, 'garden': None}
         if not user:
             return {**base,'animal':None,'travel':None,'postcards':[],'friends':[],'events':[],'gifts':[],'inventory':None}
         settle(con,now)
         pet=con.execute('SELECT * FROM pets WHERE user_id=?',(user['id'],)).fetchone()
         if pet:
             ensure_starter_items(con, user['id'], pet['id'], now)
+            base['garden'] = garden_state(con, user['id'], now)
         backfill_card_rewards(con, user['id'], now)
         trip=con.execute('SELECT * FROM trips WHERE pet_id=? AND settled=0',(pet['id'],)).fetchone() if pet else None
-        cards=con.execute('SELECT * FROM cards WHERE user_id=? ORDER BY created_at DESC,id DESC',(user['id'],)).fetchall()
+        cards=con.execute('SELECT c.*,t.weather FROM cards c JOIN trips t ON t.id=c.trip_id WHERE c.user_id=? ORDER BY c.created_at DESC,c.id DESC',(user['id'],)).fetchall()
         friends=con.execute('SELECT p.name,p.kind,u.username,t.place,t.ends_at FROM pets p JOIN users u ON u.id=p.user_id LEFT JOIN trips t ON t.pet_id=p.id AND t.settled=0 WHERE p.user_id!=? ORDER BY p.id',(user['id'],)).fetchall()
         events=con.execute('SELECT * FROM events ORDER BY id DESC LIMIT 30').fetchall()
         gifts=con.execute(
@@ -515,7 +594,8 @@ def depart(body: TravelInput,request: Request):
         if tool_key and item_quantity(con, user['id'], tool_key) < 1:
             raise HTTPException(409,'背包里还没有' + TOOLS[tool_key]['name'] + '。')
         peers=con.execute('SELECT t.id,p.kind,p.name,u.username FROM trips t JOIN pets p ON p.id=t.pet_id JOIN users u ON u.id=p.user_id WHERE t.place=? AND t.ends_at>? AND t.started_at<? AND t.pet_id!=?',(body.place,now,now+DURATION,pet['id'])).fetchall()
-        tid=con.execute('INSERT INTO trips(pet_id,place,started_at,ends_at,food_key,tool_key) VALUES(?,?,?,?,?,?)',(pet['id'],body.place,now,now+DURATION,food_key,tool_key)).lastrowid
+        combination = match_combination(body.place, food_key, tool_key)
+        tid=con.execute('INSERT INTO trips(pet_id,place,started_at,ends_at,food_key,tool_key,weather,combination) VALUES(?,?,?,?,?,?,?,?)',(pet['id'],body.place,now,now+DURATION,food_key,tool_key,json.dumps(world_weather(now), ensure_ascii=False),json.dumps(combination or {}, ensure_ascii=False))).lastrowid
         con.execute('INSERT INTO events(message,created_at) VALUES(?,?)',(user['username']+'的'+pet['name']+'去了'+PLACES[body.place]['name']+'。',now))
         for peer in peers:
             participants=json.dumps([{'name':peer['name'],'kind':peer['kind'],'username':peer['username']},{'name':pet['name'],'kind':pet['kind'],'username':user['username']}],ensure_ascii=False)
@@ -538,6 +618,57 @@ def claim_daily(request: Request):
         if not inserted:
             raise HTTPException(409, '今天的饭团已经领过了，明天再来看看。')
         grant_item(con, user['id'], 'rice_ball', 1, 'daily', today, now)
+    return {'ok': True}
+
+def require_garden(con, request):
+    user = identity(con, request)
+    pet = con.execute('SELECT id FROM pets WHERE user_id=?', (user['id'],)).fetchone()
+    if not pet:
+        raise HTTPException(409, '先领养小动物，再一起照料草圃吧。')
+    ensure_starter_items(con, user['id'], pet['id'])
+    return user['id']
+
+@app.post('/api/garden/{plot}/plant')
+def plant(plot: int, request: Request):
+    if plot not in range(1, 4):
+        raise HTTPException(422, '请选择一块草圃。')
+    with database() as con:
+        con.execute('BEGIN IMMEDIATE')
+        uid = require_garden(con, request)
+        if not con.execute('UPDATE garden_plots SET ready_at=?,cycle=cycle+1 WHERE user_id=? AND plot=? AND ready_at IS NULL', (time.time() + GROW_SECONDS, uid, plot)).rowcount:
+            raise HTTPException(409, '这块地已经种好了，等收获后再播种。')
+    return {'ok': True}
+
+@app.post('/api/garden/{plot}/harvest')
+def harvest(plot: int, request: Request):
+    if plot not in range(1, 4):
+        raise HTTPException(422, '请选择一块草圃。')
+    with database() as con:
+        con.execute('BEGIN IMMEDIATE')
+        uid = require_garden(con, request)
+        if not con.execute('UPDATE garden_plots SET ready_at=NULL WHERE user_id=? AND plot=? AND ready_at<=?', (uid, plot, time.time())).rowcount:
+            raise HTTPException(409, '这块地还没有成熟的三叶草。')
+        con.execute('UPDATE gardens SET clovers=clovers+? WHERE user_id=?', (HARVEST_AMOUNT, uid))
+    return {'ok': True, 'clovers': HARVEST_AMOUNT}
+
+@app.post('/api/shop/buy')
+def buy_food(body: ShopInput, request: Request):
+    if body.item not in FOODS:
+        raise HTTPException(422, '小铺里暂时没有这种食物。')
+    with database() as con:
+        con.execute('BEGIN IMMEDIATE')
+        uid = require_garden(con, request)
+        prior = con.execute('SELECT item_key FROM shop_orders WHERE user_id=? AND request_id=?', (uid, body.request_id)).fetchone()
+        if prior:
+            if prior['item_key'] != body.item:
+                raise HTTPException(409, '这次兑换已经用于另一种食物，请刷新后重试。')
+            return {'ok': True}
+        price = FOODS[body.item]['price']
+        if not con.execute('UPDATE gardens SET clovers=clovers-? WHERE user_id=? AND clovers>=?', (price, uid, price)).rowcount:
+            raise HTTPException(409, '三叶草不够了，去草圃收获一些再来吧。')
+        now = time.time()
+        con.execute('INSERT INTO shop_orders VALUES(?,?,?,?,?)', (uid, body.request_id, body.item, price, now))
+        grant_item(con, uid, body.item, 1, 'shop', body.request_id, now)
     return {'ok': True}
 
 @app.post('/api/gifts', status_code=201)
