@@ -125,6 +125,7 @@ with database() as con:
     CREATE TABLE IF NOT EXISTS inventory(user_id INTEGER NOT NULL REFERENCES users(id), item_key TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 0, first_obtained_at REAL NOT NULL, PRIMARY KEY(user_id,item_key));
     CREATE TABLE IF NOT EXISTS item_grants(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), item_key TEXT NOT NULL, quantity INTEGER NOT NULL, source_type TEXT NOT NULL, source_id TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE(user_id,item_key,source_type,source_id));
     CREATE TABLE IF NOT EXISTS daily_claims(user_id INTEGER NOT NULL REFERENCES users(id), claim_date TEXT NOT NULL, created_at REAL NOT NULL, PRIMARY KEY(user_id,claim_date));
+    CREATE TABLE IF NOT EXISTS gifts(id INTEGER PRIMARY KEY, from_user_id INTEGER NOT NULL REFERENCES users(id), to_user_id INTEGER NOT NULL REFERENCES users(id), item_key TEXT NOT NULL, message TEXT NOT NULL, created_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, message TEXT NOT NULL, created_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS auth_attempts(address TEXT PRIMARY KEY, count INTEGER NOT NULL, started_at REAL NOT NULL);
@@ -160,6 +161,10 @@ class TravelInput(BaseModel):
     place: str
     food: str = 'rice_ball'
     tool: str | None = None
+
+class GiftInput(BaseModel):
+    to_username: str = Field(min_length=1, max_length=24)
+    item: str
 
 def password_hash(password, salt=None):
     salt = salt or secrets.token_hex(16)
@@ -228,14 +233,14 @@ def grant_item(con, user_id, key, quantity, source_type, source_id, now=None):
     )
     return True
 
-def consume_item(con, user_id, key, quantity=1):
+def consume_item(con, user_id, key, quantity=1, message=None):
     item = ITEM_CATALOG[key]
     removed = con.execute(
         'UPDATE inventory SET quantity=quantity-? WHERE user_id=? AND item_key=? AND quantity>=?',
         (quantity, user_id, key, quantity),
     ).rowcount
     if not removed:
-        raise HTTPException(409, item['name'] + '不够了，先去背包领取补给或换一种食物。')
+        raise HTTPException(409, message or item['name'] + '不够了，先去背包领取补给或换一种食物。')
 
 def ensure_starter_items(con, user_id, pet_id, now=None):
     now = now or time.time()
@@ -393,6 +398,12 @@ def as_trip(row):
     result['tool'] = item_snapshot(result['tool_key']) if result.get('tool_key') else None
     return result
 
+def as_gift(row, user_id):
+    result = dict(row)
+    result['item'] = item_snapshot(result.pop('item_key'))
+    result['direction'] = 'sent' if result['from_user_id'] == user_id else 'received'
+    return result
+
 @app.get('/api/state')
 def state(request: Request):
     now=time.time()
@@ -401,7 +412,7 @@ def state(request: Request):
         user=identity(con,request,False)
         base={'user':dict(user) if user else None,'server_time':now,'duration':DURATION,'legacy_available':legacy_available(con)}
         if not user:
-            return {**base,'animal':None,'travel':None,'postcards':[],'friends':[],'events':[],'inventory':None}
+            return {**base,'animal':None,'travel':None,'postcards':[],'friends':[],'events':[],'gifts':[],'inventory':None}
         settle(con,now)
         pet=con.execute('SELECT * FROM pets WHERE user_id=?',(user['id'],)).fetchone()
         if pet:
@@ -411,7 +422,16 @@ def state(request: Request):
         cards=con.execute('SELECT * FROM cards WHERE user_id=? ORDER BY created_at DESC,id DESC',(user['id'],)).fetchall()
         friends=con.execute('SELECT p.name,p.kind,u.username,t.place,t.ends_at FROM pets p JOIN users u ON u.id=p.user_id LEFT JOIN trips t ON t.pet_id=p.id AND t.settled=0 WHERE p.user_id!=? ORDER BY p.id',(user['id'],)).fetchall()
         events=con.execute('SELECT * FROM events ORDER BY id DESC LIMIT 30').fetchall()
-        return {**base,'animal':dict(pet) if pet else None,'travel':as_trip(trip) if trip else None,'postcards':[as_card(c) for c in cards],'friends':[dict(f) for f in friends],'events':[dict(e) for e in events],'inventory':inventory_state(con,user['id'],now) if pet else None}
+        gifts=con.execute(
+            """SELECT g.*,fu.username AS from_username,tu.username AS to_username,fp.name AS from_pet,tp.name AS to_pet
+            FROM gifts g
+            JOIN users fu ON fu.id=g.from_user_id JOIN users tu ON tu.id=g.to_user_id
+            LEFT JOIN pets fp ON fp.user_id=g.from_user_id LEFT JOIN pets tp ON tp.user_id=g.to_user_id
+            WHERE g.from_user_id=? OR g.to_user_id=?
+            ORDER BY g.id DESC LIMIT 30""",
+            (user['id'], user['id']),
+        ).fetchall()
+        return {**base,'animal':dict(pet) if pet else None,'travel':as_trip(trip) if trip else None,'postcards':[as_card(c) for c in cards],'friends':[dict(f) for f in friends],'events':[dict(e) for e in events],'gifts':[as_gift(g,user['id']) for g in gifts],'inventory':inventory_state(con,user['id'],now) if pet else None}
 
 @app.post('/api/animal',status_code=201)
 def create_animal(body: AnimalInput,request: Request):
@@ -475,6 +495,40 @@ def claim_daily(request: Request):
         if not inserted:
             raise HTTPException(409, '今天的饭团已经领过了，明天再来看看。')
         grant_item(con, user['id'], 'rice_ball', 1, 'daily', today, now)
+    return {'ok': True}
+
+@app.post('/api/gifts', status_code=201)
+def send_gift(body: GiftInput, request: Request):
+    item_key = body.item.strip()
+    to_username = body.to_username.strip()
+    if item_key not in SOUVENIRS:
+        raise HTTPException(422, '现在只能赠送旅行带回的纪念品。')
+    with database() as con:
+        con.execute('BEGIN IMMEDIATE')
+        user = identity(con, request)
+        sender_pet = con.execute('SELECT * FROM pets WHERE user_id=?', (user['id'],)).fetchone()
+        if not sender_pet:
+            raise HTTPException(409, '请先选择你的小动物。')
+        receiver = con.execute(
+            'SELECT u.id,u.username,p.name AS pet_name FROM users u LEFT JOIN pets p ON p.user_id=u.id WHERE u.username=?',
+            (to_username,),
+        ).fetchone()
+        if not receiver:
+            raise HTTPException(404, '没有找到这位朋友。')
+        if receiver['id'] == user['id']:
+            raise HTTPException(409, '礼物要留给朋友的小动物。')
+        if not receiver['pet_name']:
+            raise HTTPException(409, '这位朋友还没有小动物。')
+        consume_item(con, user['id'], item_key, message='背包里还没有可送出的' + ITEM_CATALOG[item_key]['name'] + '。')
+        now = time.time()
+        item_name = ITEM_CATALOG[item_key]['name']
+        message = user['username'] + '的' + sender_pet['name'] + '给' + receiver['username'] + '的' + receiver['pet_name'] + '留下了' + item_name + '。'
+        gift_id = con.execute(
+            'INSERT INTO gifts(from_user_id,to_user_id,item_key,message,created_at) VALUES(?,?,?,?,?)',
+            (user['id'], receiver['id'], item_key, message, now),
+        ).lastrowid
+        grant_item(con, receiver['id'], item_key, 1, 'gift', gift_id, now)
+        con.execute('INSERT INTO events(message,created_at) VALUES(?,?)', (message, now))
     return {'ok': True}
 
 @app.post('/api/postcards/{card_id}/open')

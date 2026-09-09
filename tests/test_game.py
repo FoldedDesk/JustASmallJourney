@@ -113,6 +113,32 @@ class GameTests(unittest.TestCase):
         self.assertIsNone(state['travel'])
         self.assertEqual(self.item(state, 'foods', 'apple')['quantity'], 0)
 
+    def test_gift_souvenir_between_friends(self):
+        self.adopt()
+        friend = self.second_player()
+        with self.game.database() as con:
+            self.game.grant_item(con, 1, 'pinecone', 1, 'test', 'giftable')
+        self.assertEqual(self.client.post('/api/gifts', json={'to_username': 'friend', 'item': 'pinecone'}).status_code, 201)
+        owner_state = self.client.get('/api/state').json()
+        friend_state = friend.get('/api/state').json()
+        self.assertEqual(self.item(owner_state, 'souvenirs', 'pinecone')['quantity'], 0)
+        self.assertEqual(self.item(friend_state, 'souvenirs', 'pinecone')['quantity'], 1)
+        self.assertEqual(owner_state['gifts'][0]['direction'], 'sent')
+        self.assertEqual(owner_state['gifts'][0]['to_username'], 'friend')
+        self.assertEqual(friend_state['gifts'][0]['direction'], 'received')
+        self.assertEqual(friend_state['gifts'][0]['from_username'], 'owner')
+        self.assertIn('松果', friend_state['events'][0]['message'])
+        self.assertEqual(self.client.post('/api/gifts', json={'to_username': 'friend', 'item': 'pinecone'}).status_code, 409)
+        self.assertEqual(self.item(friend.get('/api/state').json(), 'souvenirs', 'pinecone')['quantity'], 1)
+
+    def test_gift_validation(self):
+        self.adopt()
+        self.assertEqual(self.client.post('/api/gifts', json={'to_username': 'owner', 'item': 'pinecone'}).status_code, 409)
+        friend = self.second_player()
+        self.assertEqual(self.client.post('/api/gifts', json={'to_username': 'friend', 'item': 'rice_ball'}).status_code, 422)
+        self.assertEqual(self.client.post('/api/gifts', json={'to_username': 'missing', 'item': 'pinecone'}).status_code, 404)
+        self.assertEqual(self.client.post('/api/gifts', json={'to_username': 'friend', 'item': 'pinecone'}).status_code, 409)
+
     def test_concurrent_departures_and_settlement(self):
         self.adopt()
         def depart(_):
