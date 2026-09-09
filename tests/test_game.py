@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from travel_helpers import travel
 
 
 class GameTests(unittest.TestCase):
@@ -18,6 +19,9 @@ class GameTests(unittest.TestCase):
         os.environ['JOURNEY_DB'] = self.temp.name + '/game.sqlite3'
         import app
         self.game = importlib.reload(app)
+        self.route_patch = patch.object(self.game, 'choose_destination', return_value='forest')
+        self.route_patch.start()
+        self.addCleanup(self.route_patch.stop)
         self.client = TestClient(self.game.app)
         self.client.post('/api/register',json={'username':'owner','password':'test-pass-123'})
 
@@ -38,19 +42,19 @@ class GameTests(unittest.TestCase):
         return next(item for item in state['inventory'][category] if item['key'] == key)
 
     def test_validation_and_busy_trip(self):
-        self.assertEqual(self.client.post('/api/travel',json={'place':'forest'}).status_code,409)
+        self.assertEqual(travel(self.client, {'place':'forest'}).status_code,409)
         for body in [{'kind':'dragon','name':'小满'},{'kind':'frog','name':'   '}]:
             self.assertEqual(self.client.post('/api/animal',json=body).status_code,422)
         self.adopt()
         self.assertEqual(self.client.post('/api/animal',json={'kind':'cat','name':'新名字'}).status_code,409)
         self.assertEqual(self.client.post('/api/travel',json={'place':'unknown'}).status_code,422)
-        self.assertEqual(self.client.post('/api/travel',json={'place':'forest'}).status_code,201)
-        self.assertEqual(self.client.post('/api/travel',json={'place':'sea'}).status_code,409)
+        self.assertEqual(travel(self.client, {'place':'forest'}).status_code,201)
+        self.assertEqual(travel(self.client, {'place':'sea'}).status_code,409)
         self.assertEqual(len(self.client.get('/api/state').json()['postcards']),0)
 
     def test_offline_restart_settles_once_and_keeps_opened_state(self):
         self.adopt()
-        self.client.post('/api/travel',json={'place':'sea'})
+        travel(self.client, {'place':'sea'})
         self.finish()
         importlib.reload(self.game)
         with TestClient(self.game.app) as client:
@@ -66,7 +70,7 @@ class GameTests(unittest.TestCase):
             self.assertEqual(client.post(f"/api/postcards/{card['id']}/open").status_code,200)
             self.assertEqual(len(client.get('/api/state').json()['postcards']),1)
             self.assertTrue(client.get('/api/state').json()['postcards'][0]['opened'])
-            self.assertEqual(client.post('/api/travel',json={'place':'mountain'}).status_code,201)
+            self.assertEqual(travel(client, {'place':'mountain'}).status_code,201)
 
     def test_backpack_starter_daily_claim_and_food_consumption(self):
         self.adopt()
@@ -81,7 +85,7 @@ class GameTests(unittest.TestCase):
         state = self.client.get('/api/state').json()
         self.assertEqual(self.item(state, 'foods', 'rice_ball')['quantity'], 4)
         self.assertFalse(state['inventory']['daily']['available'])
-        self.assertEqual(self.client.post('/api/travel', json={'place': 'forest', 'food': 'apple', 'tool': 'camera'}).status_code, 201)
+        self.assertEqual(travel(self.client, {'place': 'forest', 'food': 'apple', 'tool': 'camera'}).status_code, 201)
         state = self.client.get('/api/state').json()
         self.assertEqual(state['travel']['food']['key'], 'apple')
         self.assertEqual(state['travel']['tool']['key'], 'camera')
@@ -94,7 +98,7 @@ class GameTests(unittest.TestCase):
 
     def test_map_can_add_extra_souvenir_once(self):
         self.adopt()
-        self.assertEqual(self.client.post('/api/travel', json={'place': 'mountain', 'food': 'rice_ball', 'tool': 'map'}).status_code, 201)
+        self.assertEqual(travel(self.client, {'place': 'mountain', 'food': 'rice_ball', 'tool': 'map'}).status_code, 201)
         self.finish()
         with patch.object(self.game.random, 'random', return_value=0.0):
             state = self.client.get('/api/state').json()
@@ -106,10 +110,10 @@ class GameTests(unittest.TestCase):
 
     def test_insufficient_food_blocks_departure(self):
         self.adopt()
-        self.assertEqual(self.client.post('/api/travel', json={'place': 'sea', 'food': 'apple'}).status_code, 201)
+        self.assertEqual(travel(self.client, {'place': 'sea', 'food': 'apple'}).status_code, 201)
         self.finish()
         self.client.get('/api/state')
-        self.assertEqual(self.client.post('/api/travel', json={'place': 'forest', 'food': 'apple'}).status_code, 409)
+        self.assertEqual(travel(self.client, {'place': 'forest', 'food': 'apple'}).status_code, 409)
         state = self.client.get('/api/state').json()
         self.assertIsNone(state['travel'])
         self.assertEqual(self.item(state, 'foods', 'apple')['quantity'], 0)
@@ -121,7 +125,7 @@ class GameTests(unittest.TestCase):
             self.assertEqual(self.item(state, 'foods', key)['quantity'], 1)
         for key in ['sketchbook', 'compass']:
             self.assertEqual(self.item(state, 'tools', key)['quantity'], 1)
-        self.assertEqual(self.client.post('/api/travel', json={'place': 'library', 'food': 'sandwich', 'tool': 'compass'}).status_code, 201)
+        self.assertEqual(travel(self.client, {'place': 'library', 'food': 'sandwich', 'tool': 'compass'}).status_code, 201)
         self.finish()
         with patch.object(self.game.random, 'random', return_value=0.0):
             state = self.client.get('/api/state').json()
@@ -129,13 +133,13 @@ class GameTests(unittest.TestCase):
         self.assertEqual(card['place'], 'library')
         self.assertEqual({item['key'] for item in card['rewards']}, {'bookmark', 'margin_note'})
         self.assertEqual(self.item(state, 'souvenirs', 'margin_note')['quantity'], 1)
-        self.assertEqual(self.client.post('/api/travel', json={'place': 'garden', 'food': 'cookie', 'tool': 'sketchbook'}).status_code, 201)
+        self.assertEqual(travel(self.client, {'place': 'garden', 'food': 'cookie', 'tool': 'sketchbook'}).status_code, 201)
         self.finish()
         with patch.object(self.game.random, 'random', return_value=0.0):
             state = self.client.get('/api/state').json()
         self.assertEqual(state['postcards'][0]['place'], 'garden')
         self.assertEqual(state['postcards'][0]['variant'], 'special')
-        self.assertEqual(self.client.post('/api/travel', json={'place': 'town', 'food': 'hot_tea'}).status_code, 201)
+        self.assertEqual(travel(self.client, {'place': 'town', 'food': 'hot_tea'}).status_code, 201)
 
     def test_gift_souvenir_between_friends(self):
         self.adopt()
@@ -174,7 +178,7 @@ class GameTests(unittest.TestCase):
         weather = self.game.world_weather(self.game.time.time())
         weather.update(key='rainy', **self.game.WEATHER['rainy'])
         with patch.object(self.game, 'world_weather', return_value=weather):
-            self.assertEqual(self.client.post('/api/travel', json={'place': 'library', 'food': 'hot_tea'}).status_code, 201)
+            self.assertEqual(travel(self.client, {'place': 'library', 'food': 'hot_tea'}).status_code, 201)
         self.assertEqual(self.client.get('/api/state').json()['travel']['weather'], weather)
         self.finish()
         importlib.reload(self.game)
@@ -190,7 +194,7 @@ class GameTests(unittest.TestCase):
 
     def test_old_trip_without_weather_still_settles(self):
         self.adopt()
-        self.client.post('/api/travel', json={'place': 'forest'})
+        travel(self.client, {'place': 'forest'})
         with self.game.database() as con:
             con.execute("UPDATE trips SET weather='{}'")
         self.finish()
@@ -211,7 +215,7 @@ class GameTests(unittest.TestCase):
         def depart(_):
             with TestClient(self.game.app) as c:
                 c.cookies.update(self.client.cookies)
-                return c.post('/api/travel',json={'place':'forest'}).status_code
+                return travel(c, {'place':'forest'}).status_code
         with ThreadPoolExecutor(max_workers=4) as pool:
             self.assertEqual(sorted(pool.map(depart,range(4))),[201,409,409,409])
         self.finish()
@@ -233,18 +237,18 @@ class GameTests(unittest.TestCase):
     def test_auth_isolation_logout_and_origin(self):
         self.adopt()
         friend=self.second_player()
-        self.client.post('/api/travel',json={'place':'forest'})
+        travel(self.client, {'place':'forest'})
         self.finish()
         card=self.client.get('/api/state').json()['postcards'][0]
         self.assertEqual(friend.get('/api/state').json()['postcards'],[])
         self.assertEqual(friend.post(f"/api/postcards/{card['id']}/open").status_code,404)
         self.assertEqual(friend.get('/api/state').json()['animal']['name'],'团子')
-        self.assertEqual(friend.post('/api/travel',json={'place':'sea'},headers={'origin':'https://evil.example'}).status_code,403)
+        self.assertEqual(travel(friend, {'place':'sea'},headers={'origin':'https://evil.example'}).status_code,403)
         cookies=dict(friend.cookies)
         friend.post('/api/logout')
         self.assertIsNone(friend.get('/api/state').json()['user'])
         friend.cookies.update(cookies)
-        self.assertEqual(friend.post('/api/travel',json={'place':'sea'}).status_code,401)
+        self.assertEqual(travel(friend, {'place':'sea'}).status_code,401)
         friend.cookies.clear()
         self.assertEqual(friend.post('/api/login',json={'username':'friend','password':'incorrect-password'}).status_code,401)
         self.assertEqual(friend.post('/api/login',json={'username':'friend','password':'test-pass-456'}).status_code,200)
@@ -253,8 +257,8 @@ class GameTests(unittest.TestCase):
     def test_shared_encounter_survives_restart_and_is_not_duplicated(self):
         self.adopt()
         friend=self.second_player()
-        self.client.post('/api/travel',json={'place':'forest'})
-        friend.post('/api/travel',json={'place':'forest'})
+        travel(self.client, {'place':'forest'})
+        travel(friend, {'place':'forest'})
         self.assertEqual(friend.get('/api/state').json()['postcards'],[])
         self.finish()
         importlib.reload(self.game)
@@ -275,11 +279,11 @@ class GameTests(unittest.TestCase):
     def test_no_encounter_for_different_places_or_nonoverlapping_trips(self):
         self.adopt()
         friend=self.second_player()
-        self.client.post('/api/travel',json={'place':'forest'})
-        friend.post('/api/travel',json={'place':'sea'})
+        travel(self.client, {'place':'forest'})
+        travel(friend, {'place':'sea'})
         self.finish()
         self.client.get('/api/state')
-        friend.post('/api/travel',json={'place':'forest'})
+        travel(friend, {'place':'forest'})
         self.finish()
         self.assertEqual(len(self.client.get('/api/state').json()['postcards']),1)
         self.assertEqual(len(friend.get('/api/state').json()['postcards']),2)
@@ -289,8 +293,8 @@ class GameTests(unittest.TestCase):
     def test_shared_cards_arrive_at_each_owners_return_time(self):
         self.adopt()
         friend=self.second_player()
-        self.client.post('/api/travel',json={'place':'sea'})
-        friend.post('/api/travel',json={'place':'sea'})
+        travel(self.client, {'place':'sea'})
+        travel(friend, {'place':'sea'})
         with self.game.database() as con:
             con.execute('UPDATE trips SET ends_at=1 WHERE pet_id=(SELECT id FROM pets WHERE user_id=1)')
         self.assertEqual(len(self.client.get('/api/state').json()['postcards']),2)

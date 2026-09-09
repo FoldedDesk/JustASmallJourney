@@ -14,7 +14,7 @@ const destinations = {
 };
 
 export default {
-  props: { scene: { default: 'home' }, animal: { default: '🐸' }, name: { default: '小动物' }, away: Boolean, weather: Object, unread: { default: 0 } },
+  props: { memory: Boolean, scene: { default: 'home' }, animal: { default: '🐸' }, name: { default: '小动物' }, away: Boolean, weather: Object, unread: { default: 0 } },
   emits: ['navigate', 'mail'],
   data: () => ({ lamp: false, watered: false, message: '', active: '', discovered: [], pulse: 0 }),
   computed: {
@@ -36,7 +36,7 @@ export default {
   template: `
     <section class="journey-scene-wrap" :aria-label="scene==='home'?'可交互的小屋':destination.title+'场景预览'">
       <div :class="['interactive-scene', 'land-'+scene, 'sky-'+weatherKey, {'lamp-on':lamp}]">
-        <div class="scene-title"><span>{{scene==='home'?name+'的小院':destination.title}}</span><small>{{scene==='home'?'在小细节里，慢慢过一天':'风景预览 · 点亮三处小发现'}}</small></div>
+        <div class="scene-title"><span>{{scene==='home'?name+'的小院':destination.title}}</span><small>{{scene==='home'?'在小细节里，慢慢过一天':memory?'旅途回忆 · 再看看这些小细节':'风景预览 · 点亮三处小发现'}}</small></div>
         <div class="scenery" aria-hidden="true">
           <div class="scene-orb"></div><div class="scene-cloud cloud-one"></div><div class="scene-cloud cloud-two"></div>
           <svg class="landscape" viewBox="0 0 800 400" preserveAspectRatio="none"><path class="ridge-back" d="M0 280 Q150 110 340 260 Q540 120 800 250 V400 H0Z"/><path class="ridge-front" d="M0 330 Q230 250 450 320 Q640 240 800 310 V400 H0Z"/><path class="scene-trail" d="M430 270 Q360 330 480 400 H370 Q310 325 410 270Z"/></svg>

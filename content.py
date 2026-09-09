@@ -91,3 +91,29 @@ for key, place, food, tool, title, reward, icon, name, text in [
 def match_combination(place, food, tool):
     matches = [c for c in COMBINATIONS if c['place'] == place and c['food'] == food and (c['tool'] is None or c['tool'] == tool)]
     return max(matches, key=lambda c: bool(c['tool']), default=None)
+
+# Additive weights keep every destination reachable. These are local game rules.
+FOOD_DESTINATIONS = {
+    'rice_ball': (), 'apple': ('forest', 'garden'), 'sandwich': ('town', 'mountain'),
+    'pudding': ('sea', 'lake'), 'cookie': ('library', 'town'), 'hot_tea': ('mountain', 'library'),
+    'croissant': ('town', 'ruins'), 'honey_toast': ('forest', 'garden'),
+    'strawberry': ('garden', 'lake'), 'jam_bread': ('ruins', 'forest'),
+    'sweet_potato': ('desert', 'snow'), 'corn': ('lake', 'garden'),
+    'mushroom_soup': ('snow', 'forest'), 'cocoa': ('snow', 'mountain'),
+    'lemon_soda': ('sea', 'desert'), 'berry_pie': ('ruins', 'lake'),
+    'cheese_bread': ('library', 'town'), 'dango': ('lake', 'garden'),
+}
+TOOL_DESTINATIONS = {
+    'camera': ('sea', 'mountain'), 'sketchbook': ('library', 'ruins'),
+    'map': ('forest', 'snow'), 'compass': ('desert', 'mountain'),
+}
+
+def destination_weights(food, tool):
+    return {place: 10 + (30 if place in FOOD_DESTINATIONS.get(food, ()) else 0)
+            + (10 if place in TOOL_DESTINATIONS.get(tool, ()) else 0)
+            for place in PLACE_PRESENTATION}
+
+def choose_destination(food, tool):
+    import random
+    weights = destination_weights(food, tool)
+    return random.choices(list(weights), weights=list(weights.values()), k=1)[0]

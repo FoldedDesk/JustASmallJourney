@@ -16,8 +16,9 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from content import EXTRA_FOODS, EXTRA_PLACES, EXTRA_SOUVENIRS, PLACE_PRESENTATION, COMBINATIONS, match_combination
+from content import choose_destination
 
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('JOURNEY_DB', ROOT / 'data/journey.sqlite3'))
@@ -217,6 +218,12 @@ with database() as con:
     ensure_column(con, 'cards', 'title', "TEXT NOT NULL DEFAULT ''")
     ensure_column(con, 'cards', 'template_key', "TEXT NOT NULL DEFAULT ''")
     ensure_column(con, 'cards', 'combination', "TEXT NOT NULL DEFAULT '{}'")
+    ensure_column(con, 'events', 'encounter_id', 'INTEGER REFERENCES encounters(id)')
+    if not con.execute("SELECT 1 FROM settings WHERE key='hidden_routes_v1'").fetchone():
+        con.execute('UPDATE events SET encounter_id=(SELECT id FROM encounters WHERE encounters.message=events.message AND encounters.occurred_at=events.created_at LIMIT 1)')
+        for event in con.execute("SELECT id,message FROM events WHERE message LIKE '%去了%'").fetchall():
+            con.execute('UPDATE events SET message=? WHERE id=?', (event['message'].split('去了')[0] + '出发去旅行了。', event['id']))
+        con.execute("INSERT INTO settings VALUES('hidden_routes_v1','done')")
 
 app = FastAPI(title='JustASmallJourney')
 
@@ -241,7 +248,7 @@ class AnimalInput(BaseModel):
     name: str = Field(min_length=1, max_length=16)
 
 class TravelInput(BaseModel):
-    place: str
+    model_config = ConfigDict(extra='forbid')
     food: str = 'rice_ball'
     tool: str | None = None
 
@@ -506,15 +513,16 @@ def settle(con, now):
 def as_card(row):
     result=dict(row)
     result['weather']=json.loads(result.get('weather', '{}')) or None
-    result['combination']=json.loads(result['combination']) or None
+    result.pop('combination', None)
     result['participants']=json.loads(result['participants'])
     result['rewards']=[item_snapshot(key) for key in decode_rewards(result['rewards'])]
     return result
 
 def as_trip(row):
     result = dict(row)
+    result.pop('place', None)
     result['weather'] = json.loads(result['weather']) or None
-    result['combination'] = json.loads(result['combination']) or None
+    result.pop('combination', None)
     result['food'] = item_snapshot(result['food_key']) if result.get('food_key') else None
     result['tool'] = item_snapshot(result['tool_key']) if result.get('tool_key') else None
     return result
@@ -531,7 +539,7 @@ def state(request: Request):
     with database() as con:
         con.execute('BEGIN IMMEDIATE')
         user=identity(con,request,False)
-        base={'user':dict(user) if user else None,'server_time':now,'duration':DURATION,'legacy_available':legacy_available(con),'weather':world_weather(now), 'catalog': {'places': PLACES, 'combinations': COMBINATIONS}, 'garden': None}
+        base={'user':dict(user) if user else None,'server_time':now,'duration':DURATION,'legacy_available':legacy_available(con),'weather':world_weather(now), 'catalog': {'places': {key: {field: place[field] for field in ('name', 'icon', 'tag', 'description')} for key, place in PLACES.items()}}, 'garden': None}
         if not user:
             return {**base,'animal':None,'travel':None,'postcards':[],'friends':[],'events':[],'gifts':[],'inventory':None}
         settle(con,now)
@@ -542,8 +550,8 @@ def state(request: Request):
         backfill_card_rewards(con, user['id'], now)
         trip=con.execute('SELECT * FROM trips WHERE pet_id=? AND settled=0',(pet['id'],)).fetchone() if pet else None
         cards=con.execute('SELECT c.*,t.weather FROM cards c JOIN trips t ON t.id=c.trip_id WHERE c.user_id=? ORDER BY c.created_at DESC,c.id DESC',(user['id'],)).fetchall()
-        friends=con.execute('SELECT p.name,p.kind,u.username,t.place,t.ends_at FROM pets p JOIN users u ON u.id=p.user_id LEFT JOIN trips t ON t.pet_id=p.id AND t.settled=0 WHERE p.user_id!=? ORDER BY p.id',(user['id'],)).fetchall()
-        events=con.execute('SELECT * FROM events ORDER BY id DESC LIMIT 30').fetchall()
+        friends=con.execute('SELECT p.name,p.kind,u.username,(t.id IS NOT NULL) AS traveling,t.ends_at FROM pets p JOIN users u ON u.id=p.user_id LEFT JOIN trips t ON t.pet_id=p.id AND t.settled=0 WHERE p.user_id!=? ORDER BY p.id',(user['id'],)).fetchall()
+        events=con.execute('SELECT e.id,e.message,e.created_at FROM events e WHERE e.encounter_id IS NULL OR EXISTS (SELECT 1 FROM encounters x JOIN trips a ON a.id=x.trip_a JOIN trips b ON b.id=x.trip_b WHERE x.id=e.encounter_id AND a.settled=1 AND b.settled=1) ORDER BY e.id DESC LIMIT 30').fetchall()
         gifts=con.execute(
             """SELECT g.*,fu.username AS from_username,tu.username AS to_username,fp.name AS from_pet,tp.name AS to_pet
             FROM gifts g
@@ -571,8 +579,6 @@ def create_animal(body: AnimalInput,request: Request):
 
 @app.post('/api/travel',status_code=201)
 def depart(body: TravelInput,request: Request):
-    if body.place not in PLACES:
-        raise HTTPException(422,'这个目的地还没有开放。')
     food_key = body.food.strip() if body.food else ''
     tool_key = body.tool.strip() if body.tool else None
     if food_key not in FOODS:
@@ -593,15 +599,16 @@ def depart(body: TravelInput,request: Request):
         consume_item(con, user['id'], food_key)
         if tool_key and item_quantity(con, user['id'], tool_key) < 1:
             raise HTTPException(409,'背包里还没有' + TOOLS[tool_key]['name'] + '。')
-        peers=con.execute('SELECT t.id,p.kind,p.name,u.username FROM trips t JOIN pets p ON p.id=t.pet_id JOIN users u ON u.id=p.user_id WHERE t.place=? AND t.ends_at>? AND t.started_at<? AND t.pet_id!=?',(body.place,now,now+DURATION,pet['id'])).fetchall()
-        combination = match_combination(body.place, food_key, tool_key)
-        tid=con.execute('INSERT INTO trips(pet_id,place,started_at,ends_at,food_key,tool_key,weather,combination) VALUES(?,?,?,?,?,?,?,?)',(pet['id'],body.place,now,now+DURATION,food_key,tool_key,json.dumps(world_weather(now), ensure_ascii=False),json.dumps(combination or {}, ensure_ascii=False))).lastrowid
-        con.execute('INSERT INTO events(message,created_at) VALUES(?,?)',(user['username']+'的'+pet['name']+'去了'+PLACES[body.place]['name']+'。',now))
+        place_key = choose_destination(food_key, tool_key)
+        peers=con.execute('SELECT t.id,p.kind,p.name,u.username FROM trips t JOIN pets p ON p.id=t.pet_id JOIN users u ON u.id=p.user_id WHERE t.place=? AND t.ends_at>? AND t.started_at<? AND t.pet_id!=?',(place_key,now,now+DURATION,pet['id'])).fetchall()
+        combination = match_combination(place_key, food_key, tool_key)
+        tid=con.execute('INSERT INTO trips(pet_id,place,started_at,ends_at,food_key,tool_key,weather,combination) VALUES(?,?,?,?,?,?,?,?)',(pet['id'],place_key,now,now+DURATION,food_key,tool_key,json.dumps(world_weather(now), ensure_ascii=False),json.dumps(combination or {}, ensure_ascii=False))).lastrowid
+        con.execute('INSERT INTO events(message,created_at) VALUES(?,?)',(user['username']+'的'+pet['name']+'出发去旅行了。',now))
         for peer in peers:
             participants=json.dumps([{'name':peer['name'],'kind':peer['kind'],'username':peer['username']},{'name':pet['name'],'kind':pet['kind'],'username':user['username']}],ensure_ascii=False)
-            message=peer['username']+'的'+peer['name']+'和'+user['username']+'的'+pet['name']+'在'+PLACES[body.place]['name']+'相遇，一起分享了'+FOODS[food_key]['name']+'。'
-            con.execute('INSERT INTO encounters(trip_a,trip_b,place,participants,message,occurred_at) VALUES(?,?,?,?,?,?)',(peer['id'],tid,body.place,participants,message,now))
-            con.execute('INSERT INTO events(message,created_at) VALUES(?,?)',(message,now))
+            message=peer['username']+'的'+peer['name']+'和'+user['username']+'的'+pet['name']+'在'+PLACES[place_key]['name']+'相遇，一起分享了'+FOODS[food_key]['name']+'。'
+            encounter_id = con.execute('INSERT INTO encounters(trip_a,trip_b,place,participants,message,occurred_at) VALUES(?,?,?,?,?,?)',(peer['id'],tid,place_key,participants,message,now)).lastrowid
+            con.execute('INSERT INTO events(message,created_at,encounter_id) VALUES(?,?,?)',(message,now,encounter_id))
     return {'ok':True}
 
 @app.post('/api/inventory/daily')

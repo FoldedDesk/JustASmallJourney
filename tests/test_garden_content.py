@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from travel_helpers import travel
 
 
 class GardenContentTests(unittest.TestCase):
@@ -14,6 +15,9 @@ class GardenContentTests(unittest.TestCase):
         os.environ['JOURNEY_DB'] = self.temp.name + '/garden.sqlite3'
         import app
         self.game = importlib.reload(app)
+        self.route_patch = patch.object(self.game, 'choose_destination', return_value='forest')
+        self.route_patch.start()
+        self.addCleanup(self.route_patch.stop)
         self.client = TestClient(self.game.app)
         self.client.post('/api/register', json={'username': 'gardener', 'password': 'garden-test-123'})
         self.client.post('/api/animal', json={'kind': 'rabbit', 'name': '团团'})
@@ -90,14 +94,15 @@ class GardenContentTests(unittest.TestCase):
         self.assertEqual(len(catalog['places']), 10)
         self.assertEqual(len(self.game.FOODS), 18)
         self.assertEqual(len(self.game.SOUVENIRS), 41)
-        self.assertEqual(len(catalog['combinations']), 20)
-        for recipe in catalog['combinations']:
+        self.assertNotIn('combinations', catalog)
+        self.assertEqual(len(self.game.COMBINATIONS), 20)
+        for recipe in self.game.COMBINATIONS:
             with self.subTest(recipe=recipe['key']):
                 with self.game.database() as con:
                     self.game.grant_item(con, 1, recipe['food'], 1, 'test', recipe['key'])
-                response = self.client.post('/api/travel', json={'place': recipe['place'], 'food': recipe['food'], 'tool': recipe['tool']})
+                response = travel(self.client, {'place': recipe['place'], 'food': recipe['food'], 'tool': recipe['tool']})
                 self.assertEqual(response.status_code, 201)
-                self.assertEqual(self.state()['travel']['combination'], recipe)
+                self.assertNotIn('combination', self.state()['travel'])
                 with self.game.database() as con:
                     con.execute('UPDATE trips SET ends_at=started_at-1 WHERE settled=0')
                 with patch.object(self.game.random, 'random', return_value=.99):
@@ -116,14 +121,17 @@ class GardenContentTests(unittest.TestCase):
         self.assertIsNone(self.game.match_combination('sea', 'lemon_soda', 'map'))
         self.assertIsNone(self.game.match_combination('forest', 'lemon_soda', 'camera'))
         self.client.post('/api/shop/buy', json={'item': 'lemon_soda', 'request_id': 'soda-for-recipe-0001'})
-        self.client.post('/api/travel', json={'place': 'sea', 'food': 'lemon_soda', 'tool': 'camera'})
-        snapshot = self.state()['travel']['combination']
+        travel(self.client, {'place': 'sea', 'food': 'lemon_soda', 'tool': 'camera'})
+        self.assertNotIn('combination', self.state()['travel'])
         with self.game.database() as con:
+            snapshot = con.execute('SELECT combination FROM trips').fetchone()['combination']
             con.execute('UPDATE trips SET ends_at=1')
         importlib.reload(self.game)
         with patch.object(self.game, 'match_combination', return_value=None):
             card = self.state()['postcards'][0]
-        self.assertEqual(card['combination'], snapshot)
+        self.assertNotIn('combination', card)
+        with self.game.database() as con:
+            self.assertEqual(con.execute('SELECT combination FROM cards').fetchone()['combination'], snapshot)
         self.assertEqual(self.quantity(self.state(), 'bubble_photo'), 1)
 
     def test_all_foods_can_be_replenished_in_shop(self):
@@ -135,6 +143,14 @@ class GardenContentTests(unittest.TestCase):
             after = self.state()
             self.assertEqual(after['garden']['clovers'], before['garden']['clovers'] - food['price'])
             self.assertEqual(self.quantity(after, key), self.quantity(before, key) + 1)
+
+    def test_state_does_not_publish_undiscovered_recipes_or_story_catalog(self):
+        state = self.state()
+        self.assertEqual(set(state['catalog']), {'places'})
+        for place in state['catalog']['places'].values():
+            self.assertEqual(set(place), {'name', 'icon', 'tag', 'description'})
+        with TestClient(self.game.app) as visitor:
+            self.assertEqual(visitor.get('/api/state').json()['catalog'], state['catalog'])
 
 
 if __name__ == '__main__':
