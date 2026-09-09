@@ -4,7 +4,7 @@ import './style.css';
 createApp({
   data: () => ({ username: '', password: '', authMode: 'login', claimLegacy: false, tick: 0, state: null, page: 'home', kind: 'frog', name: '', place: 'forest', food: 'rice_ball', tool: '', giftTo: '', giftItem: '', busy: false, error: '', selected: null, now: Date.now()/1000, offset: 0, timer: null, polling: false, refreshTask: null,
     animals: {frog:'🐸',cat:'🐱',fox:'🦊',rabbit:'🐰',squirrel:'🐿️'}, labels:{frog:'青蛙',cat:'小猫',fox:'狐狸',rabbit:'兔子',squirrel:'松鼠'},
-    places: {forest:{name:'微风森林',icon:'🌳',tag:'走进一片绿意',description:'树荫、苔藓，还有藏在风里的小惊喜。'},sea:{name:'日落海岸',icon:'🐚',tag:'听一听海的声音',description:'沿着柔软沙滩，捡起一枚被海浪磨亮的贝壳。'},mountain:{name:'星星山谷',icon:'⛰️',tag:'离天空再近一点',description:'穿过安静山谷，等一颗星星亮起来。'}} }),
+    places: {forest:{name:'微风森林',icon:'🌳',tag:'走进一片绿意',description:'树荫、苔藓，还有藏在风里的小惊喜。'},sea:{name:'日落海岸',icon:'🐚',tag:'听一听海的声音',description:'沿着柔软沙滩，捡起一枚被海浪磨亮的贝壳。'},mountain:{name:'星星山谷',icon:'⛰️',tag:'离天空再近一点',description:'穿过安静山谷，等一颗星星亮起来。'},library:{name:'晴窗图书馆',icon:'📚',tag:'在书页里晒太阳',description:'找一个靠窗的位置，把下午慢慢读完。'},town:{name:'铃铛小镇',icon:'🏘️',tag:'走过叮当响的街角',description:'石板路、风铃和刚出炉的面包香。'},garden:{name:'雨后花园',icon:'🌼',tag:'闻一闻雨后的草木',description:'花瓣上还有露水，云正在慢慢散开。'}} }),
   computed: {
     animal(){ return this.state?.animal; },
     trip(){return this.state?.travel;},
@@ -59,7 +59,7 @@ createApp({
   beforeUnmount(){clearInterval(this.timer);document.removeEventListener('keydown',this.escape);},
   template: `
     <div class="shell">
-      <header><a class="brand" href="#" @click.prevent="page='home'"><span class="brand-mark">✳</span><span>小小远行<small>JustASmallJourney</small></span></a><span class="header-note">把日子过慢一点，把世界看多一点。</span><span class="account" v-if="state?.user">{{state.user.username}} <button class="text-button" @click="logout" :disabled="busy">退出</button></span><span class="edition" v-else>朋友共享版 · 02</span></header>
+      <header><a class="brand" href="#" @click.prevent="page='home'"><span class="brand-mark">✳</span><span>小小远行<small>JustASmallJourney</small></span></a><span class="header-note">把日子过慢一点，把世界看多一点。</span><span class="account" v-if="state?.user">{{state.user.username}} <button class="text-button" @click="logout" :disabled="busy">退出</button></span><span class="edition" v-else>内容扩展版 · 05</span></header>
       <div v-if="error" class="error" role="alert">{{error}} <button @click="refresh" :disabled="polling">重试</button></div>
       <main v-if="!state" class="loading">正在打开你的小屋…</main>
       <main v-else-if="!state.user" class="welcome auth-screen">

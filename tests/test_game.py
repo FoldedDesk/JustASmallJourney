@@ -113,6 +113,29 @@ class GameTests(unittest.TestCase):
         self.assertIsNone(state['travel'])
         self.assertEqual(self.item(state, 'foods', 'apple')['quantity'], 0)
 
+    def test_expanded_content_catalog_and_new_places(self):
+        self.adopt()
+        state = self.client.get('/api/state').json()
+        for key in ['sandwich', 'pudding', 'cookie', 'hot_tea']:
+            self.assertEqual(self.item(state, 'foods', key)['quantity'], 1)
+        for key in ['sketchbook', 'compass']:
+            self.assertEqual(self.item(state, 'tools', key)['quantity'], 1)
+        self.assertEqual(self.client.post('/api/travel', json={'place': 'library', 'food': 'sandwich', 'tool': 'compass'}).status_code, 201)
+        self.finish()
+        with patch.object(self.game.random, 'random', return_value=0.0):
+            state = self.client.get('/api/state').json()
+        card = state['postcards'][0]
+        self.assertEqual(card['place'], 'library')
+        self.assertEqual({item['key'] for item in card['rewards']}, {'bookmark', 'margin_note'})
+        self.assertEqual(self.item(state, 'souvenirs', 'margin_note')['quantity'], 1)
+        self.assertEqual(self.client.post('/api/travel', json={'place': 'garden', 'food': 'cookie', 'tool': 'sketchbook'}).status_code, 201)
+        self.finish()
+        with patch.object(self.game.random, 'random', return_value=0.0):
+            state = self.client.get('/api/state').json()
+        self.assertEqual(state['postcards'][0]['place'], 'garden')
+        self.assertEqual(state['postcards'][0]['variant'], 'special')
+        self.assertEqual(self.client.post('/api/travel', json={'place': 'town', 'food': 'hot_tea'}).status_code, 201)
+
     def test_gift_souvenir_between_friends(self):
         self.adopt()
         friend = self.second_player()

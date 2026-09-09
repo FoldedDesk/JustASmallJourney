@@ -50,14 +50,44 @@ PLACES = {
         'lines': ['山里的风很轻，星星离我很近。', '在山坡上坐了一会儿，云慢慢走过。', '带回一颗小石子，也带回一点勇气。'],
         'special_lines': ['相机拍到第一颗星亮起来，山谷安静得像一封信。', '在月光下抬头的时候，好像听见山谷轻轻回应了一声。'],
     },
+    'library': {
+        'name': '晴窗图书馆',
+        'gift': '一枚书签',
+        'gift_key': 'bookmark',
+        'extra_gift_key': 'margin_note',
+        'lines': ['在靠窗的位置读了一下午，阳光慢慢挪到书脊上。', '翻到一页夹着花瓣的旧书，像遇见很久以前的天气。', '图书馆很安静，连脚步声都放轻了。'],
+        'special_lines': ['速写本上留下了一排书架和一束阳光，像把下午折进纸里。', '相机拍到灰尘在光里游泳，安静得很好看。'],
+    },
+    'town': {
+        'name': '铃铛小镇',
+        'gift': '一张车票根',
+        'gift_key': 'ticket_stub',
+        'extra_gift_key': 'postmark',
+        'lines': ['小镇的风铃叮当响，街角面包店刚好出炉。', '在石板路上慢慢走，口袋里装着一张小小票根。', '黄昏时路灯亮起来，小镇像刚睡醒一样温柔。'],
+        'special_lines': ['相机拍下风铃摇晃的一瞬间，整条街都像在眨眼。', '速写本里多了一盏路灯，还有路过的人留下的影子。'],
+    },
+    'garden': {
+        'name': '雨后花园',
+        'gift': '一朵干花',
+        'gift_key': 'pressed_flower',
+        'extra_gift_key': 'dew_bead',
+        'lines': ['雨刚停，花瓣上还挂着很小的光。', '沿着湿湿的小径走了一圈，鞋尖沾到一点青草香。', '花园里没有人催促，连云都慢慢散开。'],
+        'special_lines': ['相机靠近花瓣时，露珠里倒映出一整个小小天空。', '速写本上画了一朵花，旁边写着“今天很适合想念”。'],
+    },
 }
 FOODS = {
     'rice_ball': {'name': '饭团', 'icon': '🍙', 'description': '朴素可靠，适合每一次小远行。'},
     'apple': {'name': '苹果', 'icon': '🍎', 'description': '清甜轻便，路上可以慢慢吃。'},
+    'sandwich': {'name': '三明治', 'icon': '🥪', 'description': '夹着蔬菜和一点好心情。'},
+    'pudding': {'name': '布丁', 'icon': '🍮', 'description': '软软甜甜，适合带去看日落。'},
+    'cookie': {'name': '曲奇', 'icon': '🍪', 'description': '咬一口会掉屑，也会开心。'},
+    'hot_tea': {'name': '热茶', 'icon': '🍵', 'description': '慢慢喝，路也会显得不那么远。'},
 }
 TOOLS = {
-    'camera': {'name': '相机', 'icon': '📷', 'description': '更容易拍到特别明信片。'},
-    'map': {'name': '地图', 'icon': '🗺️', 'description': '更容易发现额外纪念品。'},
+    'camera': {'name': '相机', 'icon': '📷', 'description': '更容易拍到特别明信片。', 'effect': 'special'},
+    'sketchbook': {'name': '速写本', 'icon': '📓', 'description': '更容易留下特别明信片。', 'effect': 'special'},
+    'map': {'name': '地图', 'icon': '🗺️', 'description': '更容易发现额外纪念品。', 'effect': 'extra'},
+    'compass': {'name': '指南针', 'icon': '🧭', 'description': '更容易找到额外纪念品。', 'effect': 'extra'},
 }
 SOUVENIRS = {
     'pinecone': {'name': '松果', 'icon': '🌰', 'description': '来自微风森林的小礼物。'},
@@ -66,6 +96,12 @@ SOUVENIRS = {
     'sea_glass': {'name': '海玻璃', 'icon': '💎', 'description': '被海水磨圆的一点亮光。'},
     'pebble': {'name': '小石子', 'icon': '🪨', 'description': '从星星山谷带回的一点勇气。'},
     'star_fragment': {'name': '星光碎片', 'icon': '✨', 'description': '山路旁偶然发现的亮晶晶。'},
+    'bookmark': {'name': '书签', 'icon': '🔖', 'description': '晴窗图书馆夹在书页里的小小停顿。'},
+    'margin_note': {'name': '页边小记', 'icon': '📝', 'description': '有人在书页旁留下的一句轻声话。'},
+    'ticket_stub': {'name': '车票根', 'icon': '🎟️', 'description': '铃铛小镇车站边带回的纸片。'},
+    'postmark': {'name': '小镇邮戳', 'icon': '📮', 'description': '盖着日期和风铃声的纪念。'},
+    'pressed_flower': {'name': '干花', 'icon': '🌼', 'description': '雨后花园里晾干的一点香气。'},
+    'dew_bead': {'name': '露珠珠子', 'icon': '🫧', 'description': '像把雨后的早晨收进掌心。'},
     'travel_badge': {'name': '同行纪念章', 'icon': '🏵️', 'description': '和朋友的小动物相遇时留下的共同回忆。'},
 }
 ITEM_CATALOG = {
@@ -73,7 +109,7 @@ ITEM_CATALOG = {
     **{key: {**value, 'category': 'tool'} for key, value in TOOLS.items()},
     **{key: {**value, 'category': 'souvenir'} for key, value in SOUVENIRS.items()},
 }
-STARTER_ITEMS = {'rice_ball': 3, 'apple': 1, 'camera': 1, 'map': 1}
+STARTER_ITEMS = {'rice_ball': 3, 'apple': 1, 'sandwich': 1, 'pudding': 1, 'cookie': 1, 'hot_tea': 1, 'camera': 1, 'sketchbook': 1, 'map': 1, 'compass': 1}
 GIFT_TO_ITEM = {
     '松果': 'pinecone',
     '一枚松果': 'pinecone',
@@ -81,6 +117,12 @@ GIFT_TO_ITEM = {
     '一枚贝壳': 'shell',
     '小石子': 'pebble',
     '一颗小石子': 'pebble',
+    '书签': 'bookmark',
+    '一枚书签': 'bookmark',
+    '车票根': 'ticket_stub',
+    '一张车票根': 'ticket_stub',
+    '干花': 'pressed_flower',
+    '一朵干花': 'pressed_flower',
     '一枚同行纪念章': 'travel_badge',
     '同行纪念章': 'travel_badge',
 }
@@ -370,9 +412,10 @@ def logout(request: Request, response: Response):
 def settle(con, now):
     for trip in con.execute('SELECT t.*,p.user_id,p.kind,p.name FROM trips t JOIN pets p ON p.id=t.pet_id WHERE settled=0 AND ends_at<=?',(now,)).fetchall():
         place = PLACES[trip['place']]
-        variant = 'special' if trip['tool_key'] == 'camera' and random.random() < 0.5 else 'standard'
+        tool = TOOLS.get(trip['tool_key'] or '')
+        variant = 'special' if tool and tool.get('effect') == 'special' and random.random() < 0.5 else 'standard'
         rewards = [place['gift_key']]
-        if trip['tool_key'] == 'map' and random.random() < 0.5:
+        if tool and tool.get('effect') == 'extra' and random.random() < 0.5:
             rewards.append(place['extra_gift_key'])
         lines = place['special_lines'] if variant == 'special' else place['lines']
         create_card(
