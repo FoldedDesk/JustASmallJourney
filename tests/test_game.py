@@ -6,6 +6,7 @@ from pathlib import Path
 import unittest
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -31,6 +32,9 @@ class GameTests(unittest.TestCase):
         with closing(sqlite3.connect(self.game.DB)) as con:
             with con:
                 con.execute('UPDATE trips SET ends_at=started_at-1')
+
+    def item(self, state, category, key):
+        return next(item for item in state['inventory'][category] if item['key'] == key)
 
     def test_validation_and_busy_trip(self):
         self.assertEqual(self.client.post('/api/travel',json={'place':'forest'}).status_code,409)
@@ -62,6 +66,52 @@ class GameTests(unittest.TestCase):
             self.assertEqual(len(client.get('/api/state').json()['postcards']),1)
             self.assertTrue(client.get('/api/state').json()['postcards'][0]['opened'])
             self.assertEqual(client.post('/api/travel',json={'place':'mountain'}).status_code,201)
+
+    def test_backpack_starter_daily_claim_and_food_consumption(self):
+        self.adopt()
+        state = self.client.get('/api/state').json()
+        self.assertEqual(self.item(state, 'foods', 'rice_ball')['quantity'], 3)
+        self.assertEqual(self.item(state, 'foods', 'apple')['quantity'], 1)
+        self.assertEqual(self.item(state, 'tools', 'camera')['quantity'], 1)
+        self.assertEqual(self.item(state, 'tools', 'map')['quantity'], 1)
+        self.assertTrue(state['inventory']['daily']['available'])
+        self.assertEqual(self.client.post('/api/inventory/daily').status_code, 200)
+        self.assertEqual(self.client.post('/api/inventory/daily').status_code, 409)
+        state = self.client.get('/api/state').json()
+        self.assertEqual(self.item(state, 'foods', 'rice_ball')['quantity'], 4)
+        self.assertFalse(state['inventory']['daily']['available'])
+        self.assertEqual(self.client.post('/api/travel', json={'place': 'forest', 'food': 'apple', 'tool': 'camera'}).status_code, 201)
+        state = self.client.get('/api/state').json()
+        self.assertEqual(state['travel']['food']['key'], 'apple')
+        self.assertEqual(state['travel']['tool']['key'], 'camera')
+        self.assertEqual(self.item(state, 'foods', 'apple')['quantity'], 0)
+        self.assertEqual(self.item(state, 'tools', 'camera')['quantity'], 1)
+        self.finish()
+        state = self.client.get('/api/state').json()
+        self.assertEqual(self.item(state, 'souvenirs', 'pinecone')['quantity'], 1)
+        self.assertEqual(self.item(self.client.get('/api/state').json(), 'souvenirs', 'pinecone')['quantity'], 1)
+
+    def test_map_can_add_extra_souvenir_once(self):
+        self.adopt()
+        self.assertEqual(self.client.post('/api/travel', json={'place': 'mountain', 'food': 'rice_ball', 'tool': 'map'}).status_code, 201)
+        self.finish()
+        with patch.object(self.game.random, 'random', return_value=0.0):
+            state = self.client.get('/api/state').json()
+        rewards = {item['key'] for item in state['postcards'][0]['rewards']}
+        self.assertEqual(rewards, {'pebble', 'star_fragment'})
+        self.assertEqual(self.item(state, 'souvenirs', 'pebble')['quantity'], 1)
+        self.assertEqual(self.item(state, 'souvenirs', 'star_fragment')['quantity'], 1)
+        self.assertEqual(self.item(self.client.get('/api/state').json(), 'souvenirs', 'star_fragment')['quantity'], 1)
+
+    def test_insufficient_food_blocks_departure(self):
+        self.adopt()
+        self.assertEqual(self.client.post('/api/travel', json={'place': 'sea', 'food': 'apple'}).status_code, 201)
+        self.finish()
+        self.client.get('/api/state')
+        self.assertEqual(self.client.post('/api/travel', json={'place': 'forest', 'food': 'apple'}).status_code, 409)
+        state = self.client.get('/api/state').json()
+        self.assertIsNone(state['travel'])
+        self.assertEqual(self.item(state, 'foods', 'apple')['quantity'], 0)
 
     def test_concurrent_departures_and_settlement(self):
         self.adopt()
@@ -188,6 +238,8 @@ class GameTests(unittest.TestCase):
             self.assertEqual(state['animal']['name'],'旧小满')
             self.assertEqual(state['postcards'][0]['message'],'旧回忆')
             self.assertTrue(state['postcards'][0]['opened'])
+            self.assertEqual(self.item(state, 'souvenirs', 'pinecone')['quantity'], 1)
+            self.assertEqual(self.item(client.get('/api/state').json(), 'souvenirs', 'pinecone')['quantity'], 1)
         self.assertTrue(Path(str(legacy)+'.v1-backup').exists())
 
 
