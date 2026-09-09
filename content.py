@@ -108,9 +108,24 @@ TOOL_DESTINATIONS = {
     'map': ('forest', 'snow'), 'compass': ('desert', 'mountain'),
 }
 
+from expansion import FOODS as NEW_FOODS, PLACES as NEW_PLACES, SOUVENIRS as NEW_SOUVENIRS
+from expansion import TOOLS as EXTRA_TOOLS, PRESENTATION, FOOD_BIASES, TOOL_BIASES, COMBINATIONS as NEW_COMBINATIONS
+
+EXTRA_FOODS.update(NEW_FOODS)
+EXTRA_PLACES.update(NEW_PLACES)
+EXTRA_SOUVENIRS.update(NEW_SOUVENIRS)
+PLACE_PRESENTATION.update(PRESENTATION)
+FOOD_DESTINATIONS.update(FOOD_BIASES)
+TOOL_DESTINATIONS.update(TOOL_BIASES)
+COMBINATIONS.extend(NEW_COMBINATIONS)
+
+# Keep equipment meaningful as the world grows, without excluding any route.
+FOOD_BONUS = 3 * len(PLACE_PRESENTATION)
+TOOL_BONUS = len(PLACE_PRESENTATION)
+
 def destination_weights(food, tool):
-    return {place: 10 + (30 if place in FOOD_DESTINATIONS.get(food, ()) else 0)
-            + (10 if place in TOOL_DESTINATIONS.get(tool, ()) else 0)
+    return {place: 10 + (FOOD_BONUS if place in FOOD_DESTINATIONS.get(food, ()) else 0)
+            + (TOOL_BONUS if place in TOOL_DESTINATIONS.get(tool, ()) else 0)
             for place in PLACE_PRESENTATION}
 
 def choose_destination(food, tool):

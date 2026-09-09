@@ -35,8 +35,8 @@ class RandomTravelTests(unittest.TestCase):
                 for place in FOOD_DESTINATIONS[food]:
                     self.assertGreater(weights[place], weights[next(p for p in weights if p not in FOOD_DESTINATIONS[food])])
         weights = destination_weights('lemon_soda', 'camera')
-        self.assertAlmostEqual(weights['sea']/sum(weights.values()), 50/180)
-        self.assertAlmostEqual(weights['desert']/sum(weights.values()), 40/180)
+        self.assertAlmostEqual(weights['sea']/sum(weights.values()), 210/900)
+        self.assertAlmostEqual(weights['desert']/sum(weights.values()), 160/900)
 
     def test_client_cannot_choose_and_route_is_drawn_only_once(self):
         before = self.client.get('/api/state').json()['inventory']['foods']

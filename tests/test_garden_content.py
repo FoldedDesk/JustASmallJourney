@@ -69,7 +69,7 @@ class GardenContentTests(unittest.TestCase):
         state = self.state()
         self.assertEqual(state['garden']['clovers'], 0)
         self.assertEqual(self.quantity(state, 'berry_pie'), 2)
-        self.assertEqual(self.client.post('/api/shop/buy', json={'item': 'camera', 'request_id': 'invalid-product-000'}).status_code, 422)
+        self.assertEqual(self.client.post('/api/shop/buy', json={'item': 'pinecone', 'request_id': 'invalid-product-000'}).status_code, 422)
         importlib.reload(self.game)
         self.assertEqual(self.client.post('/api/shop/buy', json=order).status_code, 200)
         self.assertEqual(self.quantity(self.state(), 'berry_pie'), 2)
@@ -91,15 +91,18 @@ class GardenContentTests(unittest.TestCase):
 
     def test_all_combinations_deliver_distinct_collectible_cards_once(self):
         catalog = self.state()['catalog']
-        self.assertEqual(len(catalog['places']), 10)
-        self.assertEqual(len(self.game.FOODS), 18)
-        self.assertEqual(len(self.game.SOUVENIRS), 41)
+        self.assertEqual(len(catalog['places']), 50)
+        self.assertEqual(len(self.game.FOODS), 60)
+        self.assertEqual(len(self.game.SOUVENIRS), 100)
         self.assertNotIn('combinations', catalog)
-        self.assertEqual(len(self.game.COMBINATIONS), 20)
+        self.assertEqual(len(self.game.COMBINATIONS), 50)
         for recipe in self.game.COMBINATIONS:
             with self.subTest(recipe=recipe['key']):
+                before = self.quantity(self.state(), recipe['reward'])
                 with self.game.database() as con:
                     self.game.grant_item(con, 1, recipe['food'], 1, 'test', recipe['key'])
+                    if recipe['tool']:
+                        self.game.grant_item(con, 1, recipe['tool'], 1, 'test', recipe['key'])
                 response = travel(self.client, {'place': recipe['place'], 'food': recipe['food'], 'tool': recipe['tool']})
                 self.assertEqual(response.status_code, 201)
                 self.assertNotIn('combination', self.state()['travel'])
@@ -112,10 +115,10 @@ class GardenContentTests(unittest.TestCase):
                 self.assertEqual(card['title'], recipe['title'])
                 self.assertEqual(card['variant'], 'combination')
                 self.assertEqual({r['key'] for r in card['rewards']}, {self.game.PLACES[recipe['place']]['gift_key'], recipe['reward']})
-                self.assertEqual(self.quantity(self.state(), recipe['reward']), 1)
+                self.assertEqual(self.quantity(self.state(), recipe['reward']), before+1)
         importlib.reload(self.game)
-        self.assertEqual(len(self.state()['postcards']), 20)
-        self.assertEqual(len({c['template_key'] for c in self.state()['postcards']}), 20)
+        self.assertEqual(len(self.state()['postcards']), 50)
+        self.assertEqual(len({c['template_key'] for c in self.state()['postcards']}), 50)
 
     def test_special_recipe_requires_tool_and_snapshot_survives_restart(self):
         self.assertIsNone(self.game.match_combination('sea', 'lemon_soda', 'map'))
