@@ -26,6 +26,8 @@ DB.parent.mkdir(parents=True, exist_ok=True)
 DURATION = max(1, int(os.environ.get('JOURNEY_DURATION_SECONDS', '60')))
 GROW_SECONDS = max(1, int(os.environ.get('JOURNEY_GROW_SECONDS', '300')))
 HARVEST_AMOUNT = 6
+TRIP_LENGTHS = [('附近散步', 1), ('悠闲漫游', 2), ('小小远行', 3)]
+TRAIL_NOTES = ['刚找到一处可以歇脚的地方，带来的点心很好吃。', '遇见一阵轻轻的风，想把这份好心情带回去。', '沿途有好多小细节，等回家再慢慢讲给你听。', '停下来整理了一下行囊，一切都好，不用担心。']
 SESSION_SECONDS = 30 * 86400
 TIMEZONE = ZoneInfo(os.environ.get('JOURNEY_TIMEZONE', 'Asia/Shanghai'))
 ANIMALS = ['frog', 'cat', 'fox', 'rabbit', 'squirrel']
@@ -213,6 +215,11 @@ with database() as con:
     ensure_column(con, 'trips', 'tool_key', 'TEXT')
     ensure_column(con, 'trips', 'weather', "TEXT NOT NULL DEFAULT '{}'")
     ensure_column(con, 'trips', 'combination', "TEXT NOT NULL DEFAULT '{}'")
+    ensure_column(con, 'trips', 'duration_label', "TEXT NOT NULL DEFAULT '小小远行'")
+    ensure_column(con, 'trips', 'trail_note', "TEXT NOT NULL DEFAULT ''")
+    ensure_column(con, 'trips', 'note_at', 'REAL')
+    # Existing journeys have already used the old return flow.
+    ensure_column(con, 'trips', 'unpacked', 'INTEGER NOT NULL DEFAULT 1')
     ensure_column(con, 'cards', 'rewards', "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(con, 'cards', 'variant', "TEXT NOT NULL DEFAULT 'standard'")
     ensure_column(con, 'cards', 'title', "TEXT NOT NULL DEFAULT ''")
@@ -518,14 +525,31 @@ def as_card(row):
     result['rewards']=[item_snapshot(key) for key in decode_rewards(result['rewards'])]
     return result
 
-def as_trip(row):
+def as_trip(row, now):
     result = dict(row)
     result.pop('place', None)
     result['weather'] = json.loads(result['weather']) or None
     result.pop('combination', None)
     result['food'] = item_snapshot(result['food_key']) if result.get('food_key') else None
     result['tool'] = item_snapshot(result['tool_key']) if result.get('tool_key') else None
+    note = result.pop('trail_note', '')
+    note_at = result.pop('note_at', None)
+    result['note'] = {'message': note, 'created_at': note_at} if note and note_at is not None and now >= note_at else None
     return result
+
+def journey_diary(con, user_id, now):
+    rows = con.execute('SELECT t.*,p.name FROM trips t JOIN pets p ON p.id=t.pet_id WHERE p.user_id=? ORDER BY t.started_at DESC,t.id DESC', (user_id,)).fetchall()
+    cards = con.execute('SELECT id,trip_id,encounter_id,message FROM cards WHERE user_id=? ORDER BY id', (user_id,)).fetchall()
+    by_trip = {}
+    for card in cards:
+        by_trip.setdefault(card['trip_id'], []).append(dict(card))
+    entries = []
+    for row in rows:
+        entry = as_trip(row, now)
+        entry['place'] = row['place'] if row['settled'] else None
+        entry['cards'] = by_trip.get(row['id'], [])
+        entries.append(entry)
+    return entries
 
 def as_gift(row, user_id):
     result = dict(row)
@@ -541,7 +565,7 @@ def state(request: Request):
         user=identity(con,request,False)
         base={'user':dict(user) if user else None,'server_time':now,'duration':DURATION,'legacy_available':legacy_available(con),'weather':world_weather(now), 'catalog': {'places': {key: {field: place[field] for field in ('name', 'icon', 'tag', 'description')} for key, place in PLACES.items()}}, 'garden': None}
         if not user:
-            return {**base,'animal':None,'travel':None,'postcards':[],'friends':[],'events':[],'gifts':[],'inventory':None}
+            return {**base,'animal':None,'travel':None,'postcards':[],'friends':[],'events':[],'gifts':[],'inventory':None,'diary':[],'arrival':None}
         settle(con,now)
         pet=con.execute('SELECT * FROM pets WHERE user_id=?',(user['id'],)).fetchone()
         if pet:
@@ -550,6 +574,8 @@ def state(request: Request):
         backfill_card_rewards(con, user['id'], now)
         trip=con.execute('SELECT * FROM trips WHERE pet_id=? AND settled=0',(pet['id'],)).fetchone() if pet else None
         cards=con.execute('SELECT c.*,t.weather FROM cards c JOIN trips t ON t.id=c.trip_id WHERE c.user_id=? ORDER BY c.created_at DESC,c.id DESC',(user['id'],)).fetchall()
+        diary = journey_diary(con, user['id'], now)
+        arrival = next((entry for entry in reversed(diary) if entry['settled'] and not entry['unpacked']), None)
         friends=con.execute('SELECT p.name,p.kind,u.username,(t.id IS NOT NULL) AS traveling,t.ends_at FROM pets p JOIN users u ON u.id=p.user_id LEFT JOIN trips t ON t.pet_id=p.id AND t.settled=0 WHERE p.user_id!=? ORDER BY p.id',(user['id'],)).fetchall()
         events=con.execute('SELECT e.id,e.message,e.created_at FROM events e WHERE e.encounter_id IS NULL OR EXISTS (SELECT 1 FROM encounters x JOIN trips a ON a.id=x.trip_a JOIN trips b ON b.id=x.trip_b WHERE x.id=e.encounter_id AND a.settled=1 AND b.settled=1) ORDER BY e.id DESC LIMIT 30').fetchall()
         gifts=con.execute(
@@ -561,7 +587,7 @@ def state(request: Request):
             ORDER BY g.id DESC LIMIT 30""",
             (user['id'], user['id']),
         ).fetchall()
-        return {**base,'animal':dict(pet) if pet else None,'travel':as_trip(trip) if trip else None,'postcards':[as_card(c) for c in cards],'friends':[dict(f) for f in friends],'events':[dict(e) for e in events],'gifts':[as_gift(g,user['id']) for g in gifts],'inventory':inventory_state(con,user['id'],now) if pet else None}
+        return {**base,'animal':dict(pet) if pet else None,'travel':as_trip(trip,now) if trip else None,'postcards':[as_card(c) for c in cards],'friends':[dict(f) for f in friends],'events':[dict(e) for e in events],'gifts':[as_gift(g,user['id']) for g in gifts],'inventory':inventory_state(con,user['id'],now) if pet else None,'diary':diary,'arrival':arrival}
 
 @app.post('/api/animal',status_code=201)
 def create_animal(body: AnimalInput,request: Request):
@@ -600,9 +626,12 @@ def depart(body: TravelInput,request: Request):
         if tool_key and item_quantity(con, user['id'], tool_key) < 1:
             raise HTTPException(409,'背包里还没有' + TOOLS[tool_key]['name'] + '。')
         place_key = choose_destination(food_key, tool_key)
-        peers=con.execute('SELECT t.id,p.kind,p.name,u.username FROM trips t JOIN pets p ON p.id=t.pet_id JOIN users u ON u.id=p.user_id WHERE t.place=? AND t.ends_at>? AND t.started_at<? AND t.pet_id!=?',(place_key,now,now+DURATION,pet['id'])).fetchall()
+        duration_label, multiplier = random.choice(TRIP_LENGTHS)
+        ends_at = now + DURATION * multiplier
+        trail_note = random.choice(TRAIL_NOTES) if random.random() < .65 else ''
+        peers=con.execute('SELECT t.id,p.kind,p.name,u.username FROM trips t JOIN pets p ON p.id=t.pet_id JOIN users u ON u.id=p.user_id WHERE t.place=? AND t.ends_at>? AND t.started_at<? AND t.pet_id!=?',(place_key,now,ends_at,pet['id'])).fetchall()
         combination = match_combination(place_key, food_key, tool_key)
-        tid=con.execute('INSERT INTO trips(pet_id,place,started_at,ends_at,food_key,tool_key,weather,combination) VALUES(?,?,?,?,?,?,?,?)',(pet['id'],place_key,now,now+DURATION,food_key,tool_key,json.dumps(world_weather(now), ensure_ascii=False),json.dumps(combination or {}, ensure_ascii=False))).lastrowid
+        tid=con.execute('INSERT INTO trips(pet_id,place,started_at,ends_at,food_key,tool_key,weather,combination,duration_label,trail_note,note_at,unpacked) VALUES(?,?,?,?,?,?,?,?,?,?,?,0)',(pet['id'],place_key,now,ends_at,food_key,tool_key,json.dumps(world_weather(now), ensure_ascii=False),json.dumps(combination or {}, ensure_ascii=False),duration_label,trail_note,now+(ends_at-now)/2 if trail_note else None)).lastrowid
         con.execute('INSERT INTO events(message,created_at) VALUES(?,?)',(user['username']+'的'+pet['name']+'出发去旅行了。',now))
         for peer in peers:
             participants=json.dumps([{'name':peer['name'],'kind':peer['kind'],'username':peer['username']},{'name':pet['name'],'kind':pet['kind'],'username':user['username']}],ensure_ascii=False)
@@ -610,6 +639,22 @@ def depart(body: TravelInput,request: Request):
             encounter_id = con.execute('INSERT INTO encounters(trip_a,trip_b,place,participants,message,occurred_at) VALUES(?,?,?,?,?,?)',(peer['id'],tid,place_key,participants,message,now)).lastrowid
             con.execute('INSERT INTO events(message,created_at,encounter_id) VALUES(?,?,?)',(message,now,encounter_id))
     return {'ok':True}
+
+@app.post('/api/trips/{trip_id}/unpack')
+def unpack(trip_id: int, request: Request):
+    with database() as con:
+        con.execute('BEGIN IMMEDIATE')
+        user = identity(con, request)
+        settle(con, time.time())
+        trip = con.execute('SELECT t.* FROM trips t JOIN pets p ON p.id=t.pet_id WHERE t.id=? AND p.user_id=?', (trip_id, user['id'])).fetchone()
+        if not trip:
+            raise HTTPException(404, '没有找到这次旅行。')
+        if not trip['settled']:
+            raise HTTPException(409, '小动物还没回来，行李也在路上。')
+        con.execute('UPDATE trips SET unpacked=1 WHERE id=?', (trip_id,))
+        con.execute('UPDATE cards SET opened=1 WHERE trip_id=? AND user_id=?', (trip_id,user['id']))
+        cards = con.execute('SELECT c.*,t.weather FROM cards c JOIN trips t ON t.id=c.trip_id WHERE c.trip_id=? AND c.user_id=? ORDER BY c.id', (trip_id,user['id'])).fetchall()
+        return {'place':trip['place'], 'postcards':[as_card(card) for card in cards]}
 
 @app.post('/api/inventory/daily')
 def claim_daily(request: Request):

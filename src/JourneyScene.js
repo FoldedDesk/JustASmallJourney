@@ -14,8 +14,8 @@ const destinations = {
 };
 
 export default {
-  props: { memory: Boolean, scene: { default: 'home' }, animal: { default: '🐸' }, name: { default: '小动物' }, away: Boolean, weather: Object, unread: { default: 0 } },
-  emits: ['navigate', 'mail'],
+  props: { arrival: Boolean, memory: Boolean, scene: { default: 'home' }, animal: { default: '🐸' }, name: { default: '小动物' }, away: Boolean, weather: Object, unread: { default: 0 } },
+  emits: ['navigate', 'mail', 'unpack'],
   data: () => ({ lamp: false, watered: false, message: '', active: '', discovered: [], pulse: 0 }),
   computed: {
     destination() { return destinations[this.scene]; },
@@ -48,11 +48,12 @@ export default {
         </div>
         <template v-if="scene==='home'">
           <button class="scene-object lamp-switch" @click="light" :aria-pressed="lamp" aria-label="小屋灯光"><span>{{lamp?'💡':'🪟'}}</span><small>{{lamp?'关灯':'开灯'}}</small></button>
-          <button v-if="!away" class="scene-object yard-pet" @click="pet" :class="{'object-active':active==='pet'}" :aria-label="'摸摸'+name"><span :key="pulse">{{animal}}</span><small>摸摸它</small></button>
+          <button v-if="!away" class="scene-object yard-pet" @click="arrival?$emit('unpack'):pet()" :class="{'object-active':active==='pet'}" :aria-label="arrival?'听听'+name+'的旅行故事':'摸摸'+name"><span :key="pulse">{{animal}}</span><small>{{arrival?'听它讲故事':'摸摸它'}}</small></button>
           <span v-else class="yard-away">出门散步了，晚点回来</span>
           <button class="scene-object yard-flowers" @click="water" :aria-pressed="watered" aria-label="照料花朵"><span>{{watered?'🌻':'🌷'}}</span><small>{{watered?'陪花坐坐':'浇浇水'}}</small></button>
           <button class="scene-object yard-mail" @click="$emit('mail')" aria-label="打开邮箱"><span>📮</span><b v-if="unread">{{unread}}</b><small>{{unread?'有新来信':'邮箱'}}</small></button>
-          <button class="scene-object yard-bag" @click="$emit('navigate','backpack')" aria-label="查看背包"><span>🎒</span><small>背包</small></button>
+<button v-if="arrival && !away" class="scene-object yard-bag" @click="$emit('unpack')" aria-label="打开归来的行李"><span>🧳</span><small>拆行李</small></button>
+          <button v-else class="scene-object yard-bag" @click="$emit('navigate','backpack')" aria-label="查看背包"><span>🎒</span><small>背包</small></button>
           <button class="scene-object yard-sign" @click="$emit('navigate','prepare')" aria-label="路牌：去远行"><span>🪧</span><small>去远行 ↗</small></button>
         </template>
         <template v-else>

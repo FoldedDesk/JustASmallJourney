@@ -1,7 +1,7 @@
 import './backpack.css';
 
 export default {
-  props: { title: { default: '我的背包' }, titleId: { default: 'backpack-title' }, closeLabel: { default: '关闭背包' } },
+  props: { eyebrow: { default: 'YOUR LITTLE BACKPACK' }, title: { default: '我的背包' }, titleId: { default: 'backpack-title' }, closeLabel: { default: '关闭背包' } },
   emits: ['close'],
   mounted() {
     this.returnFocus = document.activeElement;
@@ -21,5 +21,5 @@ export default {
       if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) this.$emit('close');
     },
   },
-  template: `<dialog ref="dialog" class="backpack-dialog" :aria-labelledby="titleId" @cancel.prevent="$emit('close')" @click="backdrop"><header class="backpack-header"><div><span class="eyebrow">YOUR LITTLE BACKPACK</span><h2 :id="titleId">{{title}}</h2></div><button class="backpack-close" @click="$emit('close')" :aria-label="closeLabel" autofocus>×</button></header><div class="backpack-content"><slot /></div></dialog>`,
+  template: `<dialog ref="dialog" class="backpack-dialog" :aria-labelledby="titleId" @cancel.prevent="$emit('close')" @click="backdrop"><header class="backpack-header"><div><span class="eyebrow">{{eyebrow}}</span><h2 :id="titleId">{{title}}</h2></div><button class="backpack-close" @click="$emit('close')" :aria-label="closeLabel" autofocus>×</button></header><div class="backpack-content"><slot /></div></dialog>`,
 };
